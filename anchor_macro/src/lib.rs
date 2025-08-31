@@ -2,13 +2,12 @@ use proc_macro::TokenStream;
 use proc_macro_error::{abort, proc_macro_error};
 use quote::quote;
 use syn::{parse_macro_input, ItemConst};
-
 use anchor_codegen::{
-    enumeration::Enumeration,
-    generate::GenerateConfig,
-    output::Output,
-    reply::Reply,
-    static_string::{Shutdown, StaticString},
+	enumeration::Enumeration,
+	generate::GenerateConfig,
+	output::Output,
+	reply::Reply,
+	static_string::{Shutdown, StaticString},
 };
 
 /// Sends a message to the remote end
@@ -31,23 +30,23 @@ use anchor_codegen::{
 #[proc_macro_error]
 #[proc_macro]
 pub fn klipper_reply(item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as Reply);
-    let sender = input.sender_fn_name();
-    let args = input
-        .args
-        .iter()
-        .map(|arg| match &arg.value {
-            Some(value) => quote! { #value },
-            None => {
-                let name = &arg.name;
-                quote! { #name }
-            }
-        })
-        .collect::<Vec<_>>();
+	let input = parse_macro_input!(item as Reply);
+	let sender = input.sender_fn_name();
+	let args = input
+		.args
+		.iter()
+		.map(|arg| match &arg.value {
+			Some(value) => quote! { #value },
+			None => {
+				let name = &arg.name;
+				quote! { #name }
+			}
+		})
+		.collect::<Vec<_>>();
 
-    TokenStream::from(quote! {
-        crate::_anchor_config::message_handlers::#sender(#(#args),*)
-    })
+	TokenStream::from(quote! {
+		crate::_anchor_config::message_handlers::#sender(#(#args),*)
+	})
 }
 
 /// Sends a `printf`-style message to the remote end
@@ -76,20 +75,20 @@ pub fn klipper_reply(item: TokenStream) -> TokenStream {
 #[proc_macro_error]
 #[proc_macro]
 pub fn klipper_output(item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as Output);
-    let sender = input.sender_fn_name();
-    let args = input
-        .args
-        .iter()
-        .map(|arg| match &arg.value {
-            Some(value) => quote! { #value },
-            None => unreachable!(),
-        })
-        .collect::<Vec<_>>();
+	let input = parse_macro_input!(item as Output);
+	let sender = input.sender_fn_name();
+	let args = input
+		.args
+		.iter()
+		.map(|arg| match &arg.value {
+			Some(value) => quote! { #value },
+			None => unreachable!(),
+		})
+		.collect::<Vec<_>>();
 
-    TokenStream::from(quote! {
-        crate::_anchor_config::message_handlers::#sender(#(#args),*)
-    })
+	TokenStream::from(quote! {
+		crate::_anchor_config::message_handlers::#sender(#(#args),*)
+	})
 }
 
 /// Generate compile-time configuration
@@ -133,16 +132,16 @@ pub fn klipper_output(item: TokenStream) -> TokenStream {
 #[proc_macro_error]
 #[proc_macro]
 pub fn klipper_config_generate(item: TokenStream) -> TokenStream {
-    let cfg = parse_macro_input!(item as GenerateConfig);
-    if let Err(e) = cfg.validate() {
-        abort!("Invalid klipper config: {}", e);
-    }
-    let target = std::env::var("OUT_DIR").unwrap() + "/_anchor_config.rs";
-    TokenStream::from(quote! {
-        #[path = #target]
-        mod _anchor_config;
-        pub(crate) use _anchor_config::TRANSPORT as KLIPPER_TRANSPORT;
-    })
+	let cfg = parse_macro_input!(item as GenerateConfig);
+	if let Err(e) = cfg.validate() {
+		abort!("Invalid klipper config: {}", e);
+	}
+	let target = std::env::var("OUT_DIR").unwrap() + "/_anchor_config.rs";
+	TokenStream::from(quote! {
+		#[path = #target]
+		mod _anchor_config;
+		pub(crate) use _anchor_config::TRANSPORT as KLIPPER_TRANSPORT;
+	})
 }
 
 /// Adds a static string to the generated protocol dictionary
@@ -154,10 +153,10 @@ pub fn klipper_config_generate(item: TokenStream) -> TokenStream {
 #[proc_macro_error]
 #[proc_macro]
 pub fn klipper_static_string(item: TokenStream) -> TokenStream {
-    let compile_name = parse_macro_input!(item as StaticString).compile_name();
-    TokenStream::from(quote! {
-        crate::_anchor_config::static_strings::#compile_name
-    })
+	let compile_name = parse_macro_input!(item as StaticString).compile_name();
+	TokenStream::from(quote! {
+		crate::_anchor_config::static_strings::#compile_name
+	})
 }
 
 /// Sends a `shutdown` message to the remote end
@@ -171,15 +170,15 @@ pub fn klipper_static_string(item: TokenStream) -> TokenStream {
 #[proc_macro_error]
 #[proc_macro]
 pub fn klipper_shutdown(item: TokenStream) -> TokenStream {
-    let info = parse_macro_input!(item as Shutdown);
-    let compile_name = info.msg.compile_name();
-    let clock = info.clock;
-    TokenStream::from(quote! {
-        crate::_anchor_config::message_handlers::send_reply_shutdown(
-            #clock,
-            crate::_anchor_config::static_strings::#compile_name
-        );
-    })
+	let info = parse_macro_input!(item as Shutdown);
+	let compile_name = info.msg.compile_name();
+	let clock = info.clock;
+	TokenStream::from(quote! {
+		crate::_anchor_config::message_handlers::send_reply_shutdown(
+			#clock,
+			crate::_anchor_config::static_strings::#compile_name
+		);
+	})
 }
 
 /// Creates a Klipper compatible enumeration
@@ -227,8 +226,8 @@ pub fn klipper_shutdown(item: TokenStream) -> TokenStream {
 #[proc_macro_error]
 #[proc_macro]
 pub fn klipper_enumeration(item: TokenStream) -> TokenStream {
-    let enumeration = parse_macro_input!(item as Enumeration);
-    TokenStream::from(enumeration.to_token_stream())
+	let enumeration = parse_macro_input!(item as Enumeration);
+	TokenStream::from(enumeration.to_token_stream())
 }
 
 /// Creates protocol command handler
@@ -259,7 +258,7 @@ pub fn klipper_enumeration(item: TokenStream) -> TokenStream {
 #[proc_macro_error]
 #[proc_macro_attribute]
 pub fn klipper_command(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
+	item
 }
 
 /// Expose a constant
@@ -277,9 +276,9 @@ pub fn klipper_command(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_error]
 #[proc_macro_attribute]
 pub fn klipper_constant(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as ItemConst);
-    TokenStream::from(quote! {
-        #[allow(dead_code)]
-        #input
-    })
+	let input = parse_macro_input!(item as ItemConst);
+	TokenStream::from(quote! {
+		#[allow(dead_code)]
+		#input
+	})
 }
