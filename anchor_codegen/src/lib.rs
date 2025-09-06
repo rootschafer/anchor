@@ -553,11 +553,29 @@ impl Processor {
 	}
 
 	fn convert_id(id: u16) -> i16 {
-		let encoded = if id >= 0x80 {
-			vec![((id >> 7) | 0x80) as u8, (id & 0x7F) as u8]
-		} else {
-			vec![id as u8]
-		};
+        // let encoded = if id >= 0x80 {
+        //     vec![((id >> 7) | 0x80) as u8, (id & 0x7F) as u8]
+        // } else {
+        //     vec![id as u8]
+        // };
+
+		// Encode id using the same signed-VLQ rules Anchor uses at runtime
+		// so the host and MCU agree on the exact bytes for this id.
+		let sv = id as i32;
+		let mut encoded: Vec<u8> = Vec::new();
+		if !(-(1 << 26)..(3 << 26)).contains(&sv) {
+			encoded.push((((sv >> 28) & 0x7F) as u8) | 0x80);
+		}
+		if !(-(1 << 19)..(3 << 19)).contains(&sv) {
+			encoded.push((((sv >> 21) & 0x7F) as u8) | 0x80);
+		}
+		if !(-(1 << 12)..(3 << 12)).contains(&sv) {
+			encoded.push((((sv >> 14) & 0x7F) as u8) | 0x80);
+		}
+		if !(-(1 << 5)..(3 << 5)).contains(&sv) {
+			encoded.push((((sv >> 7) & 0x7F) as u8) | 0x80);
+		}
+		encoded.push((sv & 0x7F) as u8);
 
 		let mut c = encoded[0] as u32;
 		let mut v = c & 0x7F;
