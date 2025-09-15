@@ -79,7 +79,7 @@ impl Enumeration {
 			}
 
 			impl #ident {
-				fn max_variant() -> usize {
+				pub fn max_variant() -> usize {
 					#max_variant
 				}
 			}
