@@ -7,7 +7,8 @@ edition = "2021"
 
 [dependencies]
 anchor_macro = { path = "../anchor_macro" }
+embassy-sync = { version = "0.6", optional = true }
 
 [features]
 std = []
-async = []
+async = ["embassy-sync"]

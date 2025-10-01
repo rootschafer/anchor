@@ -2,6 +2,9 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use crate::{encoding::*, input_buffer::InputBuffer, output_buffer::OutputBuffer, transport_output::TransportOutput};
 
+#[cfg(feature = "async")]
+use embassy_sync::channel::Channel;
+
 const MESSAGE_HEADER_SIZE: usize = 2;
 const MESSAGE_TRAILER_SIZE: usize = 3;
 const MESSAGE_LENGTH_MIN: usize = MESSAGE_HEADER_SIZE + MESSAGE_TRAILER_SIZE;
@@ -123,12 +126,53 @@ impl<C: Config> Transport<C> {
 		}
 	}
 	
-	/// Decodes messages from an `InputBuffer` - async version
+	#[cfg(not(feature = "async"))]
+	fn parse_frame<'c>(&self, mut frame: &[u8], context: &mut C::Context<'c>) -> Result<(), ReadError> {
+		while !frame.is_empty() {
+			let cmd = <u16 as Readable>::read(&mut frame)?;
+			C::dispatch(cmd, &mut frame, context)?;
+		}
+		Ok(())
+	}
+	
 	#[cfg(feature = "async")]
-	pub async fn receive<'c>(&self, input: &mut impl InputBuffer, mut context: C::Context<'c>) {
-		// Drive state machine forward until we either have no
-		// input or know we don't have enough input.
-		let mut data = input.data();
+	async fn parse_frame<'c>(&self, frame: &'c [u8], context: &'c mut C::Context<'c>) -> Result<(), ReadError> {
+		let mut frame_mut = frame;
+		while !frame_mut.is_empty() {
+			let cmd = <u16 as Readable>::read(&mut frame_mut)?;
+			C::dispatch(cmd, &mut frame_mut, context).await?;
+		}
+		Ok(())
+	}
+
+	/// Async receive using a channel-based pattern
+	/// 
+	/// This method processes incoming byte chunks from a channel and dispatches
+	/// commands asynchronously. This is the recommended way to use anchor with
+	/// Embassy and async/await.
+	/// 
+	/// # Example
+	/// ```ignore
+	/// // UART task sends data to channel
+	/// #[embassy_executor::task]
+	/// async fn uart_rx_task(channel: &'static Channel<NoopRawMutex, [u8; 64], 4>) {
+	///     loop {
+	///         let mut buf = [0u8; 64];
+	///         let len = uart.read(&mut buf).await.unwrap();
+	///         channel.send(buf[..len].to_owned()).await;
+	///     }
+	/// }
+	/// 
+	/// // Transport task processes from channel
+	/// transport.receive_from_channel(channel, &mut context).await;
+	/// ```
+	#[cfg(feature = "async")]
+	pub async fn receive_from_bytes<'c>(&self, bytes: &'c [u8], context: &'c mut C::Context<'c>) {
+		if bytes.is_empty() {
+			return;
+		}
+
+		let mut data = bytes;
 		while !data.is_empty() {
 			if !self.is_synchronized.load(Ordering::SeqCst) {
 				// Look for a sync byte
@@ -137,7 +181,7 @@ impl<C: Config> Transport<C> {
 					self.is_synchronized.store(true, Ordering::SeqCst);
 					self.encode_acknak();
 				} else {
-					data = &[];
+					return;
 				}
 			} else {
 				if data[0] == MESSAGE_VALUE_SYNC {
@@ -146,7 +190,7 @@ impl<C: Config> Transport<C> {
 				}
 
 				if data.len() < MESSAGE_LENGTH_MIN {
-					break;
+					return;
 				}
 
 				let len = data[MESSAGE_POSITION_LENGTH] as usize;
@@ -161,7 +205,7 @@ impl<C: Config> Transport<C> {
 					continue;
 				}
 				if data.len() < len {
-					break;
+					return;
 				}
 				if data[len - MESSAGE_TRAILER_SYNC] != MESSAGE_VALUE_SYNC {
 					self.is_synchronized.store(false, Ordering::SeqCst);
@@ -177,38 +221,15 @@ impl<C: Config> Transport<C> {
 				}
 
 				let frame = &data[MESSAGE_HEADER_SIZE..len - MESSAGE_TRAILER_SIZE];
-				data = &data[len..];
 				if seq == self.next_sequence.load(Ordering::SeqCst) {
 					self.next_sequence
 						.store(((seq + 1) & MESSAGE_SEQ_MASK) | MESSAGE_DEST, Ordering::SeqCst);
-					let _ = self.parse_frame(frame, &mut context).await;
+					let _ = self.parse_frame(frame, context).await;
 				}
 				self.encode_acknak();
+				data = &data[len..];
 			}
 		}
-		// Remove consumed bytes from front
-		let consumed = input.available() - data.len();
-		if consumed > 0 {
-			input.pop(consumed);
-		}
-	}
-
-	#[cfg(not(feature = "async"))]
-	fn parse_frame<'c>(&self, mut frame: &[u8], context: &mut C::Context<'c>) -> Result<(), ReadError> {
-		while !frame.is_empty() {
-			let cmd = <u16 as Readable>::read(&mut frame)?;
-			C::dispatch(cmd, &mut frame, context)?;
-		}
-		Ok(())
-	}
-	
-	#[cfg(feature = "async")]
-	async fn parse_frame<'c>(&self, mut frame: &[u8], context: &mut C::Context<'c>) -> Result<(), ReadError> {
-		while !frame.is_empty() {
-			let cmd = <u16 as Readable>::read(&mut frame)?;
-			C::dispatch(cmd, &mut frame, context).await?;
-		}
-		Ok(())
 	}
 
 	// Fast path for ACK/NAK
