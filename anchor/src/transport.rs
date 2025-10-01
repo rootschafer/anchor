@@ -28,7 +28,12 @@ fn crc16(buf: &[u8]) -> u16 {
 pub trait Config {
 	type TransportOutput: TransportOutput;
 	type Context<'c>;
+	
+	#[cfg(not(feature = "async"))]
 	fn dispatch<'c>(cmd: u16, frame: &mut &[u8], context: &mut Self::Context<'c>) -> Result<(), ReadError>;
+	
+	#[cfg(feature = "async")]
+	fn dispatch<'c>(cmd: u16, frame: &mut &'c [u8], context: &'c mut Self::Context<'c>) -> impl core::future::Future<Output = Result<(), ReadError>> + 'c;
 }
 
 /// Protocol transport implementation
@@ -49,6 +54,7 @@ impl<C: Config> Transport<C> {
 	}
 
 	/// Decodes messages from an `InputBuffer`
+	#[cfg(not(feature = "async"))]
 	pub fn receive<'c>(&self, input: &mut impl InputBuffer, mut context: C::Context<'c>) {
 		// Drive state machine forward until we either have no
 		// input or know we don't have enough input.
@@ -116,11 +122,91 @@ impl<C: Config> Transport<C> {
 			input.pop(consumed);
 		}
 	}
+	
+	/// Decodes messages from an `InputBuffer` - async version
+	#[cfg(feature = "async")]
+	pub async fn receive<'c>(&self, input: &mut impl InputBuffer, mut context: C::Context<'c>) {
+		// Drive state machine forward until we either have no
+		// input or know we don't have enough input.
+		let mut data = input.data();
+		while !data.is_empty() {
+			if !self.is_synchronized.load(Ordering::SeqCst) {
+				// Look for a sync byte
+				if let Some(n) = data.iter().position(|b| *b == MESSAGE_VALUE_SYNC) {
+					data = &data[n + 1..];
+					self.is_synchronized.store(true, Ordering::SeqCst);
+					self.encode_acknak();
+				} else {
+					data = &[];
+				}
+			} else {
+				if data[0] == MESSAGE_VALUE_SYNC {
+					data = &data[1..];
+					continue;
+				}
 
+				if data.len() < MESSAGE_LENGTH_MIN {
+					break;
+				}
+
+				let len = data[MESSAGE_POSITION_LENGTH] as usize;
+				if !(MESSAGE_LENGTH_MIN..=MESSAGE_LENGTH_MAX).contains(&len) {
+					self.is_synchronized.store(false, Ordering::SeqCst);
+					continue;
+				}
+
+				let seq = data[MESSAGE_POSITION_SEQ];
+				if seq & !MESSAGE_SEQ_MASK != MESSAGE_DEST {
+					self.is_synchronized.store(false, Ordering::SeqCst);
+					continue;
+				}
+				if data.len() < len {
+					break;
+				}
+				if data[len - MESSAGE_TRAILER_SYNC] != MESSAGE_VALUE_SYNC {
+					self.is_synchronized.store(false, Ordering::SeqCst);
+					continue;
+				}
+
+				let frame_crc =
+					((data[len - MESSAGE_TRAILER_CRC] as u16) << 8) | (data[len - MESSAGE_TRAILER_CRC + 1] as u16);
+				let actual_crc = crc16(&data[0..len - MESSAGE_TRAILER_SIZE]);
+				if frame_crc != actual_crc {
+					self.is_synchronized.store(false, Ordering::SeqCst);
+					continue;
+				}
+
+				let frame = &data[MESSAGE_HEADER_SIZE..len - MESSAGE_TRAILER_SIZE];
+				data = &data[len..];
+				if seq == self.next_sequence.load(Ordering::SeqCst) {
+					self.next_sequence
+						.store(((seq + 1) & MESSAGE_SEQ_MASK) | MESSAGE_DEST, Ordering::SeqCst);
+					let _ = self.parse_frame(frame, &mut context).await;
+				}
+				self.encode_acknak();
+			}
+		}
+		// Remove consumed bytes from front
+		let consumed = input.available() - data.len();
+		if consumed > 0 {
+			input.pop(consumed);
+		}
+	}
+
+	#[cfg(not(feature = "async"))]
 	fn parse_frame<'c>(&self, mut frame: &[u8], context: &mut C::Context<'c>) -> Result<(), ReadError> {
 		while !frame.is_empty() {
 			let cmd = <u16 as Readable>::read(&mut frame)?;
 			C::dispatch(cmd, &mut frame, context)?;
+		}
+		Ok(())
+	}
+	
+	#[cfg(feature = "async")]
+	async fn parse_frame<'c>(&self, mut frame: &[u8], context: &mut C::Context<'c>) -> Result<(), ReadError> {
+		while !frame.is_empty() {
+			let cmd = <u16 as Readable>::read(&mut frame)?;
+			C::dispatch(cmd, &mut frame, context).await?;
 		}
 		Ok(())
 	}

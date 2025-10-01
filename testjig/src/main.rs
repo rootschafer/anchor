@@ -283,3 +283,11 @@ mod test_skipped {
 
 #[klipper_command]
 fn wee() {}
+
+// Test async command support (commented out - needs async feature enabled)
+// #[klipper_command]
+// async fn test_async_command(value: u32) {
+//     // This is an async command that should work with the new async support
+//     // In a real scenario, this would await some async operation
+//     let _ = value;
+// }

@@ -699,10 +699,12 @@ impl Processor {
 		// Generate async dispatcher if any command is async
 		if has_async {
 			quote! {
-				async fn dispatch(cmd: u16, frame: &mut &[u8], context: &mut Context) -> Result<(), ::anchor::encoding::ReadError> {
-					match cmd {
-						#(#handlers)*
-						_unknown_cmd => Err(::anchor::encoding::ReadError),
+				fn dispatch<'c>(cmd: u16, frame: &'c mut &'c [u8], context: &'c mut Context<'c>) -> impl core::future::Future<Output = Result<(), ::anchor::encoding::ReadError>> + 'c {
+					async move {
+						match cmd {
+							#(#handlers)*
+							_unknown_cmd => Err(::anchor::encoding::ReadError),
+						}
 					}
 				}
 			}
@@ -747,7 +749,7 @@ impl Processor {
 					if c.is_async {
 						quote! {
 							#[allow(unused_variables)]
-							pub async fn #handler_name(data: &mut &[u8], context: &mut Context) -> Result<(), ::anchor::encoding::ReadError> {
+							pub async fn #handler_name<'ctx>(data: &mut &[u8], context: &mut Context<'ctx>) -> Result<(), ::anchor::encoding::ReadError> {
 								#(#args)*
 								#target(#ctx_arg #(#call_args),*).await;
 								Ok(())
