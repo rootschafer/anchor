@@ -2,9 +2,6 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use crate::{encoding::*, input_buffer::InputBuffer, output_buffer::OutputBuffer, transport_output::TransportOutput};
 
-#[cfg(feature = "async")]
-use embassy_sync::channel::Channel;
-
 const MESSAGE_HEADER_SIZE: usize = 2;
 const MESSAGE_TRAILER_SIZE: usize = 3;
 const MESSAGE_LENGTH_MIN: usize = MESSAGE_HEADER_SIZE + MESSAGE_TRAILER_SIZE;
@@ -138,98 +135,151 @@ impl<C: Config> Transport<C> {
 	#[cfg(feature = "async")]
 	async fn parse_frame<'c>(&self, frame: &'c [u8], context: &'c mut C::Context<'c>) -> Result<(), ReadError> {
 		let mut frame_mut = frame;
+		// Process commands one at a time to avoid borrow checker issues
 		while !frame_mut.is_empty() {
 			let cmd = <u16 as Readable>::read(&mut frame_mut)?;
-			C::dispatch(cmd, &mut frame_mut, context).await?;
+			// Reborrow for each dispatch call
+			let ctx_ref: &'c mut C::Context<'c> = unsafe { &mut *(context as *mut _) };
+			C::dispatch(cmd, &mut frame_mut, ctx_ref).await?;
 		}
 		Ok(())
 	}
 
-	/// Async receive using a channel-based pattern
+	/// Process one frame asynchronously
 	/// 
-	/// This method processes incoming byte chunks from a channel and dispatches
-	/// commands asynchronously. This is the recommended way to use anchor with
-	/// Embassy and async/await.
+	/// This method processes a single frame from the provided bytes and returns
+	/// the number of bytes consumed. The caller should loop and call this method
+	/// repeatedly with new data.
+	/// 
+	/// This design avoids borrow checker issues with async loops and matches
+	/// Embassy's task-based architecture.
 	/// 
 	/// # Example
 	/// ```ignore
-	/// // UART task sends data to channel
+	/// use embassy_sync::channel::Channel;
+	/// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+	/// 
+	/// static RX_CHANNEL: Channel<NoopRawMutex, heapless::Vec<u8, 64>, 4> = Channel::new();
+	/// 
+	/// // UART RX task
 	/// #[embassy_executor::task]
-	/// async fn uart_rx_task(channel: &'static Channel<NoopRawMutex, [u8; 64], 4>) {
+	/// async fn uart_rx_task(mut uart: UartRx<'static>) {
 	///     loop {
 	///         let mut buf = [0u8; 64];
 	///         let len = uart.read(&mut buf).await.unwrap();
-	///         channel.send(buf[..len].to_owned()).await;
+	///         let vec = heapless::Vec::from_slice(&buf[..len]).unwrap();
+	///         RX_CHANNEL.send(vec).await;
 	///     }
 	/// }
 	/// 
-	/// // Transport task processes from channel
-	/// transport.receive_from_channel(channel, &mut context).await;
+	/// // Klipper processing task
+	/// #[embassy_executor::task]
+	/// async fn klipper_task() {
+	///     let mut context = State::new();
+	///     let mut buffer = heapless::Vec::<u8, 128>::new();
+	///     
+	///     loop {
+	///         // Get data from channel
+	///         let data = RX_CHANNEL.receive().await;
+	///         buffer.extend_from_slice(&data).ok();
+	///         
+	///         // Process one frame at a time
+	///         loop {
+	///             let consumed = KLIPPER_TRANSPORT
+	///                 .receive_one_frame_async(&buffer, &mut context)
+	///                 .await;
+	///             
+	///             if consumed == 0 {
+	///                 break;  // Need more data
+	///             }
+	///             
+	///             // Remove consumed bytes
+	///             buffer.drain(..consumed);
+	///         }
+	///     }
+	/// }
 	/// ```
+	/// 
+	/// # Returns
+	/// The number of bytes consumed from the input. Returns 0 if more data is needed
+	/// to complete a frame.
 	#[cfg(feature = "async")]
-	pub async fn receive_from_bytes<'c>(&self, bytes: &'c [u8], context: &'c mut C::Context<'c>) {
+	pub async fn receive_one_frame_async<'c>(&self, bytes: &'c [u8], context: &'c mut C::Context<'c>) -> usize {
 		if bytes.is_empty() {
-			return;
+			return 0;
 		}
 
 		let mut data = bytes;
-		while !data.is_empty() {
-			if !self.is_synchronized.load(Ordering::SeqCst) {
-				// Look for a sync byte
-				if let Some(n) = data.iter().position(|b| *b == MESSAGE_VALUE_SYNC) {
-					data = &data[n + 1..];
-					self.is_synchronized.store(true, Ordering::SeqCst);
-					self.encode_acknak();
-				} else {
-					return;
-				}
-			} else {
-				if data[0] == MESSAGE_VALUE_SYNC {
-					data = &data[1..];
-					continue;
-				}
-
-				if data.len() < MESSAGE_LENGTH_MIN {
-					return;
-				}
-
-				let len = data[MESSAGE_POSITION_LENGTH] as usize;
-				if !(MESSAGE_LENGTH_MIN..=MESSAGE_LENGTH_MAX).contains(&len) {
-					self.is_synchronized.store(false, Ordering::SeqCst);
-					continue;
-				}
-
-				let seq = data[MESSAGE_POSITION_SEQ];
-				if seq & !MESSAGE_SEQ_MASK != MESSAGE_DEST {
-					self.is_synchronized.store(false, Ordering::SeqCst);
-					continue;
-				}
-				if data.len() < len {
-					return;
-				}
-				if data[len - MESSAGE_TRAILER_SYNC] != MESSAGE_VALUE_SYNC {
-					self.is_synchronized.store(false, Ordering::SeqCst);
-					continue;
-				}
-
-				let frame_crc =
-					((data[len - MESSAGE_TRAILER_CRC] as u16) << 8) | (data[len - MESSAGE_TRAILER_CRC + 1] as u16);
-				let actual_crc = crc16(&data[0..len - MESSAGE_TRAILER_SIZE]);
-				if frame_crc != actual_crc {
-					self.is_synchronized.store(false, Ordering::SeqCst);
-					continue;
-				}
-
-				let frame = &data[MESSAGE_HEADER_SIZE..len - MESSAGE_TRAILER_SIZE];
-				if seq == self.next_sequence.load(Ordering::SeqCst) {
-					self.next_sequence
-						.store(((seq + 1) & MESSAGE_SEQ_MASK) | MESSAGE_DEST, Ordering::SeqCst);
-					let _ = self.parse_frame(frame, context).await;
-				}
+		
+		// Handle synchronization
+		if !self.is_synchronized.load(Ordering::SeqCst) {
+			// Look for a sync byte
+			if let Some(n) = data.iter().position(|b| *b == MESSAGE_VALUE_SYNC) {
+				self.is_synchronized.store(true, Ordering::SeqCst);
 				self.encode_acknak();
-				data = &data[len..];
+				return n + 1;
+			} else {
+				return bytes.len();  // Consume all, no sync found
 			}
 		}
+
+		// Skip sync bytes
+		if data[0] == MESSAGE_VALUE_SYNC {
+			return 1;
+		}
+
+		// Need at least header + trailer
+		if data.len() < MESSAGE_LENGTH_MIN {
+			return 0;  // Need more data
+		}
+
+		// Check message length
+		let len = data[MESSAGE_POSITION_LENGTH] as usize;
+		if !(MESSAGE_LENGTH_MIN..=MESSAGE_LENGTH_MAX).contains(&len) {
+			self.is_synchronized.store(false, Ordering::SeqCst);
+			return 1;  // Skip this byte and resync
+		}
+
+		// Check we have the full message
+		if data.len() < len {
+			return 0;  // Need more data
+		}
+
+		// Validate sequence and sync byte
+		let seq = data[MESSAGE_POSITION_SEQ];
+		if seq & !MESSAGE_SEQ_MASK != MESSAGE_DEST {
+			self.is_synchronized.store(false, Ordering::SeqCst);
+			return 1;  // Skip and resync
+		}
+		
+		if data[len - MESSAGE_TRAILER_SYNC] != MESSAGE_VALUE_SYNC {
+			self.is_synchronized.store(false, Ordering::SeqCst);
+			return 1;  // Skip and resync
+		}
+
+		// Validate CRC
+		let frame_crc = ((data[len - MESSAGE_TRAILER_CRC] as u16) << 8) 
+			| (data[len - MESSAGE_TRAILER_CRC + 1] as u16);
+		let actual_crc = crc16(&data[0..len - MESSAGE_TRAILER_SIZE]);
+		
+		if frame_crc != actual_crc {
+			self.is_synchronized.store(false, Ordering::SeqCst);
+			return 1;  // Skip and resync
+		}
+
+		// Valid frame - dispatch if sequence matches
+		if seq == self.next_sequence.load(Ordering::SeqCst) {
+			self.next_sequence.store(
+				((seq + 1) & MESSAGE_SEQ_MASK) | MESSAGE_DEST,
+				Ordering::SeqCst
+			);
+			
+			let frame = &data[MESSAGE_HEADER_SIZE..len - MESSAGE_TRAILER_SIZE];
+			let _ = self.parse_frame(frame, context).await;
+		}
+		
+		self.encode_acknak();
+		len  // Return bytes consumed
 	}
 
 	// Fast path for ACK/NAK
