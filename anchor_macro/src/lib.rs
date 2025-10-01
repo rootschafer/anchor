@@ -7,7 +7,7 @@ use anchor_codegen::{
 	generate::GenerateConfig,
 	output::Output,
 	reply::Reply,
-	static_string::{Shutdown, StaticString},
+	static_string::{Shutdown, ShutdownMessage, StaticString},
 };
 
 /// Sends a message to the remote end
@@ -171,15 +171,160 @@ pub fn klipper_static_string(item: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn klipper_shutdown(item: TokenStream) -> TokenStream {
 	let info = parse_macro_input!(item as Shutdown);
-	let compile_name = info.msg.compile_name();
 	let clock = info.clock;
+
+	match &info.msg {
+		ShutdownMessage::StaticString(s) => {
+			let compile_name = s.compile_name();
+			TokenStream::from(quote! {
+				crate::_anchor_config::message_handlers::send_reply_shutdown(
+					#clock,
+					crate::_anchor_config::static_strings::#compile_name
+				);
+			})
+		}
+		ShutdownMessage::Expression(expr) => TokenStream::from(quote! {
+			{
+				let msg = anchor_traits::StaticStringProvider::as_static_str(&(#expr));
+				crate::_anchor_config::message_handlers::send_reply_shutdown(
+					#clock,
+					crate::klipper_static_string!(msg)
+				);
+			}
+		}),
+	}
+}
+
+
+
+
+
+
+/// Creates a Klipper compatible shutdown enum with static string registration
+///
+/// ```
+/// klipper_shutdown_enum! {
+///     pub enum ShutdownReason {
+///         Reason1 = "Reason 1",
+///         Reason2 = "Reason 2",
+///     }
+/// }
+/// ```
+///
+/// This macro generates:
+/// 1. The enum with the specified variants
+/// 2. A `StaticStringProvider` implementation
+/// 3. Compile-time registration of all static strings
+/// 4. An `as_str()` method that returns the static string for each variant
+#[proc_macro_error]
+#[proc_macro]
+pub fn klipper_shutdown_enum(item: TokenStream) -> TokenStream {
+	use syn::parse_macro_input;
+	use syn::DeriveInput;
+	use quote::quote;
+	
+	let input = parse_macro_input!(item as DeriveInput);
+	let enum_name = &input.ident;
+	let visibility = &input.vis;
+	
+	// Extract enum variants
+	let variants = match &input.data {
+		syn::Data::Enum(data_enum) => &data_enum.variants,
+		_ => panic!("klipper_shutdown_enum! can only be used on enums"),
+	};
+	
+	// Generate the enum with string values
+	let mut enum_variants = Vec::new();
+	let mut match_arms = Vec::new();
+	let mut static_string_registrations = Vec::new();
+	
+	for (index, variant) in variants.iter().enumerate() {
+		let variant_name = &variant.ident;
+		let variant_string = match &variant.discriminant {
+			Some((_, syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }))) => s.value(),
+			_ => panic!("Each variant must have a string literal discriminant"),
+		};
+		
+		// Add to enum variants
+		enum_variants.push(quote! {
+			#variant_name = #index as isize,
+		});
+		
+		// Add to match arms for as_str()
+		match_arms.push(quote! {
+			#enum_name::#variant_name => #variant_string,
+		});
+		
+		// Add static string registration
+		static_string_registrations.push(quote! {
+			crate::klipper_static_string!(#variant_string);
+		});
+	}
+	
+	// Generate the enum and implementations
+	let enum_definition = quote! {
+		#visibility enum #enum_name {
+			#(#enum_variants)*
+		}
+		
+		impl #enum_name {
+			/// Returns the static string representation of this shutdown reason
+			pub const fn as_str(&self) -> &'static str {
+				match self {
+					#(#match_arms)*
+				}
+			}
+		}
+		
+		impl anchor_traits::StaticStringProvider for #enum_name {
+			fn as_static_str(&self) -> &'static str {
+				self.as_str()
+			}
+		}
+		
+		impl core::fmt::Debug for #enum_name {
+			fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+				write!(f, "{}", self.as_str())
+			}
+		}
+		
+		impl Clone for #enum_name {
+			fn clone(&self) -> Self {
+				*self
+			}
+		}
+		
+		impl Copy for #enum_name {}
+		
+		impl PartialEq for #enum_name {
+			fn eq(&self, other: &Self) -> bool {
+				core::ptr::eq(self, other)
+			}
+		}
+		
+		impl Eq for #enum_name {}
+		
+		impl core::hash::Hash for #enum_name {
+			fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+				core::ptr::hash(self, state)
+			}
+		}
+		
+		impl defmt::Format for #enum_name {
+			fn format(&self, f: defmt::Formatter<'_>) {
+				defmt::write!(f, "{}", self.as_str())
+			}
+		}
+	};
+	
 	TokenStream::from(quote! {
-		crate::_anchor_config::message_handlers::send_reply_shutdown(
-			#clock,
-			crate::_anchor_config::static_strings::#compile_name
-		);
+		#enum_definition
+		
+		// Register all static strings at compile time
+		#(#static_string_registrations)*
 	})
 }
+
 
 /// Creates a Klipper compatible enumeration
 ///

@@ -39,7 +39,7 @@ use command::Command;
 use generate::GenerateConfig;
 use output::Output;
 use reply::Reply;
-use static_string::{Shutdown, StaticString};
+use static_string::{Shutdown, ShutdownMessage, StaticString};
 use utils::*;
 
 use crate::enumeration::{DictionaryEnumeration, DictionaryEnumerationItem, Enumeration};
@@ -378,7 +378,13 @@ impl Processor {
 
 	fn process_klipper_shutdown(&mut self, mac: &Macro) -> Result<()> {
 		let ss = mac.parse_body::<Shutdown>()?;
-		self.static_strings.insert(ss.msg);
+		
+		// Handle static strings
+		if let ShutdownMessage::StaticString(s) = &ss.msg {
+			self.static_strings.insert(s.clone());
+		}
+		// For expressions, we don't need to register them here as they'll be handled at runtime
+		
 		if !self.messages.contains_key("shutdown") {
 			self.add_message(
 				"shutdown".into(),
