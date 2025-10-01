@@ -31,6 +31,7 @@ pub struct Command {
 	pub handler_name: Ident,
 	pub module: Option<Vec<Ident>>,
 	pub has_context: bool,
+	pub is_async: bool,
 	pub args: Vec<Arg>,
 }
 
@@ -79,6 +80,9 @@ impl Parse for Command {
 	fn parse(input: ParseStream) -> Result<Self> {
 		let func: ItemFn = input.parse()?;
 
+		// Detect if function is async
+		let is_async = func.sig.asyncness.is_some();
+
 		let mut inputs = func.sig.inputs.iter().enumerate().peekable();
 
 		let has_context = parse_has_context_param(&mut inputs);
@@ -104,6 +108,7 @@ impl Parse for Command {
 			handler_name: name,
 			id: None,
 			has_context,
+			is_async,
 			args,
 		})
 	}

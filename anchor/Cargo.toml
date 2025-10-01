@@ -10,3 +10,4 @@ anchor_macro = { path = "../anchor_macro" }
 
 [features]
 std = []
+async = []

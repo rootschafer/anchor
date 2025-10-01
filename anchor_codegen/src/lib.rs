@@ -505,6 +505,7 @@ impl Processor {
 				module: None,
 				handler_name: format_ident!("handle_identify"),
 				has_context: false,
+				is_async: false,
 				args: vec![
 					command::Arg {
 						name: format_ident!("offset"),
@@ -671,6 +672,7 @@ impl Processor {
 
 	fn write_message_dispatcher(&self) -> TokenStream {
 		let mut handlers = vec![None; 16384];
+		let mut has_async = false;
 
 		for m in self.messages.values() {
 			let id = m.id().unwrap();
@@ -679,19 +681,38 @@ impl Processor {
 			}
 			if let Message::Command(c) = m {
 				let handler = c.handler_fn_name();
-				handlers[id as usize] = Some(quote! {
-					#id => message_handlers::#handler(frame, context),
-				});
+				if c.is_async {
+					has_async = true;
+					handlers[id as usize] = Some(quote! {
+						#id => message_handlers::#handler(frame, context).await,
+					});
+				} else {
+					handlers[id as usize] = Some(quote! {
+						#id => message_handlers::#handler(frame, context),
+					});
+				}
 			}
 		}
 
 		let handlers: Vec<_> = handlers.into_iter().flatten().collect();
 
-		quote! {
-			fn dispatch(cmd: u16, frame: &mut &[u8], context: &mut Context) -> Result<(), ::anchor::encoding::ReadError> {
-				match cmd {
-					#(#handlers)*
-					_unknown_cmd => Err(::anchor::encoding::ReadError),
+		// Generate async dispatcher if any command is async
+		if has_async {
+			quote! {
+				async fn dispatch(cmd: u16, frame: &mut &[u8], context: &mut Context) -> Result<(), ::anchor::encoding::ReadError> {
+					match cmd {
+						#(#handlers)*
+						_unknown_cmd => Err(::anchor::encoding::ReadError),
+					}
+				}
+			}
+		} else {
+			quote! {
+				fn dispatch(cmd: u16, frame: &mut &[u8], context: &mut Context) -> Result<(), ::anchor::encoding::ReadError> {
+					match cmd {
+						#(#handlers)*
+						_unknown_cmd => Err(::anchor::encoding::ReadError),
+					}
 				}
 			}
 		}
@@ -721,12 +742,25 @@ impl Processor {
 							context,
 						}
 					});
-					quote! {
-						#[allow(unused_variables)]
-						pub fn #handler_name(data: &mut &[u8], context: &mut Context) -> Result<(), ::anchor::encoding::ReadError> {
-							#(#args)*
-							#target(#ctx_arg #(#call_args),*);
-							Ok(())
+					
+					// Generate async or sync handler based on command
+					if c.is_async {
+						quote! {
+							#[allow(unused_variables)]
+							pub async fn #handler_name(data: &mut &[u8], context: &mut Context) -> Result<(), ::anchor::encoding::ReadError> {
+								#(#args)*
+								#target(#ctx_arg #(#call_args),*).await;
+								Ok(())
+							}
+						}
+					} else {
+						quote! {
+							#[allow(unused_variables)]
+							pub fn #handler_name(data: &mut &[u8], context: &mut Context) -> Result<(), ::anchor::encoding::ReadError> {
+								#(#args)*
+								#target(#ctx_arg #(#call_args),*);
+								Ok(())
+							}
 						}
 					}
 				}
