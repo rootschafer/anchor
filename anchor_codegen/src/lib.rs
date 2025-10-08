@@ -111,6 +111,19 @@ impl ConfigBuilder {
 
 	/// Runs the build step
 	pub fn build(self) {
+		// Debug output for entry points
+		println!("cargo:warning=anchor_codegen: Entry points ({}):", self.entries.len());
+		for (path, module_path) in &self.entries {
+			println!("cargo:warning=anchor_codegen:   - {} (module: {})", 
+				path.display(), 
+				if module_path.is_empty() { 
+					"crate".to_string() 
+				} else { 
+					format!("crate::{}", module_path.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("::"))
+				}
+			);
+		}
+		
 		let mut processor = Processor {
 			queue: self
 				.entries
@@ -137,10 +150,24 @@ impl ConfigBuilder {
 		processor.add_identify();
 		if let Err(e) = processor.process_all() {
 			if e.is::<syn::parse::Error>() {
+				println!("cargo:warning=anchor_codegen: ERROR: Parse error encountered while scanning codebase");
+				println!("cargo:warning=anchor_codegen: Error details: {:?}", e);
+				// Print the error chain
+				let mut source = e.source();
+				while let Some(err) = source {
+					println!("cargo:warning=anchor_codegen:   caused by: {}", err);
+					source = err.source();
+				}
+				println!("cargo:warning=anchor_codegen: This is likely a syntax error in one of your source files.");
+				println!("cargo:warning=anchor_codegen: The compiler will show you the exact error. anchor_codegen is exiting early.");
 				// We ignore parse errors as we'd like the user to see these
 				// directly from the compiler. If we panic here, the compile
 				// stage never starts.
 				return;
+			} else {
+				println!("cargo:warning=anchor_codegen: ERROR: Non-parse error encountered");
+				println!("cargo:warning=anchor_codegen: {}", e);
+				panic!("anchor_codegen failed: {}", e);
 			}
 		}
 
@@ -151,11 +178,43 @@ impl ConfigBuilder {
 		processor.assign_ids();
 		processor.finalize_dictionary();
 
+		// Print summary
+		let command_count = processor.messages.values().filter(|m| matches!(m, Message::Command(_))).count();
+		let reply_count = processor.messages.values().filter(|m| matches!(m, Message::Reply(_))).count();
+		let output_count = processor.messages.values().filter(|m| matches!(m, Message::Output(_))).count();
+		let static_string_count = processor.static_strings.strings.len();
+		let constant_count = processor.dictionary.config.len();
+		let enumeration_count = processor.dictionary.enumerations.len();
+		
+		println!("cargo:warning=anchor_codegen: ===== SUMMARY =====");
+		println!("cargo:warning=anchor_codegen: Commands: {}", command_count);
+		println!("cargo:warning=anchor_codegen: Replies: {}", reply_count);
+		println!("cargo:warning=anchor_codegen: Outputs: {}", output_count);
+		println!("cargo:warning=anchor_codegen: Static Strings: {}", static_string_count);
+		println!("cargo:warning=anchor_codegen: Constants: {}", constant_count);
+		println!("cargo:warning=anchor_codegen: Enumerations: {}", enumeration_count);
+		println!("cargo:warning=anchor_codegen: Generate Config: {}", if processor.generate_cfg.is_some() { "YES" } else { "NO" });
+		println!("cargo:warning=anchor_codegen: ===================");
+
 		// panic!("{:#?}", processor.dictionary);
 
 		let outfile = format!("{}/_anchor_config.rs", env::var("OUT_DIR").expect("could not get OUT_DIR"));
-		let mut f = File::create(outfile).expect("Could not create output file");
-		processor.write(&mut f).expect("Could not write config");
+		println!("cargo:warning=anchor_codegen: Writing output to: {}", outfile);
+		let mut f = File::create(&outfile).expect("Could not create output file");
+		if let Err(e) = processor.write(&mut f) {
+			println!("cargo:warning=anchor_codegen: ERROR writing _anchor_config.rs: {}", e);
+			panic!("Failed to write anchor config: {}", e);
+		}
+		// Explicitly flush and sync the file to ensure it's written
+		if let Err(e) = f.flush() {
+			println!("cargo:warning=anchor_codegen: ERROR flushing _anchor_config.rs: {}", e);
+			panic!("Failed to flush anchor config: {}", e);
+		}
+		if let Err(e) = f.sync_all() {
+			println!("cargo:warning=anchor_codegen: ERROR syncing _anchor_config.rs: {}", e);
+			panic!("Failed to sync anchor config: {}", e);
+		}
+		println!("cargo:warning=anchor_codegen: Successfully wrote _anchor_config.rs");
 	}
 }
 
@@ -274,7 +333,7 @@ impl<'ast> Visit<'ast> for Processor {
 
 	fn visit_item_fn(&mut self, node: &'ast ItemFn) {
 		for attr in &node.attrs {
-			if path_last_name(&attr.path).map_or(false, |i| i == "klipper_command") {
+			if path_last_name(attr.path()).map_or(false, |i| i == "klipper_command") {
 				check_error!(self, self.process_command(node));
 				break;
 			}
@@ -287,7 +346,7 @@ impl<'ast> Visit<'ast> for Processor {
 
 	fn visit_item_const(&mut self, node: &'ast ItemConst) {
 		for attr in &node.attrs {
-			if path_last_name(&attr.path).map_or(false, |i| i == "klipper_constant") {
+			if path_last_name(attr.path()).map_or(false, |i| i == "klipper_constant") {
 				check_error!(self, self.process_constant(node));
 				break;
 			}
@@ -323,13 +382,36 @@ impl Processor {
 
 	fn process_one(&mut self, task: Task) -> Result<()> {
 		println!("cargo:rerun-if-changed={}", task.path.display());
+		println!("cargo:warning=anchor_codegen: Scanning {} (module path: {})", 
+			task.path.display(),
+			if task.module_path.is_empty() { 
+				"crate".to_string() 
+			} else { 
+				format!("crate::{}", task.module_path.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("::"))
+			}
+		);
 		let content = std::fs::read_to_string(&task.path)?;
-		let ast = syn::parse_file(&content)?;
+		let ast = match syn::parse_file(&content) {
+			Ok(ast) => ast,
+			Err(e) => {
+				println!("cargo:warning=anchor_codegen: ====== PARSE ERROR ======");
+				println!("cargo:warning=anchor_codegen: File: {}", task.path.display());
+				println!("cargo:warning=anchor_codegen: Error: {}", e);
+				println!("cargo:warning=anchor_codegen: ========================");
+				return Err(e.into());
+			}
+		};
 		self.current_file = Some(task.path);
 		self.current_module = task.module_path;
 		self.visit_file(&ast);
 		match self.errors.pop() {
-			Some(err) => Err(err),
+			Some(err) => {
+				println!("cargo:warning=anchor_codegen: ====== PROCESSING ERROR ======");
+				println!("cargo:warning=anchor_codegen: File: {}", self.current_file.as_ref().unwrap().display());
+				println!("cargo:warning=anchor_codegen: Error: {}", err);
+				println!("cargo:warning=anchor_codegen: ==============================");
+				Err(err)
+			},
 			None => Ok(()),
 		}
 	}
@@ -407,7 +489,10 @@ impl Processor {
 		let mut c = parse2::<Command>(func.to_token_stream())?;
 		c.module = Some(self.current_module.clone());
 		if check_is_enabled(&func.attrs) {
+			println!("cargo:warning=anchor_codegen:   Found command: {} in {}", c.name, self.current_file.as_ref().unwrap().display());
 			self.add_message(c.name.to_string(), Message::Command(c));
+		} else {
+			println!("cargo:warning=anchor_codegen:   Skipped command: {} (disabled by cfg)", c.name);
 		}
 		Ok(())
 	}
@@ -427,10 +512,14 @@ impl Processor {
 	}
 
 	fn process_config_generate(&mut self, mac: &Macro) -> Result<()> {
+		println!("cargo:warning=anchor_codegen:   Found klipper_config_generate! macro in {}", 
+			self.current_file.as_ref().unwrap().display());
 		if self.generate_cfg.is_some() {
 			return Err(anyhow::anyhow!("Multiple klipper_config_generate calls found!"));
 		}
-		self.generate_cfg = Some(parse2::<GenerateConfig>(mac.tokens.clone())?);
+		let cfg = parse2::<GenerateConfig>(mac.tokens.clone())?;
+		println!("cargo:warning=anchor_codegen:   Transport: {:?}", cfg.transport);
+		self.generate_cfg = Some(cfg);
 		Ok(())
 	}
 
@@ -440,6 +529,8 @@ impl Processor {
 		}
 
 		let name = node.ident.to_string();
+		println!("cargo:warning=anchor_codegen:   Found constant: {} in {}", name, self.current_file.as_ref().unwrap().display());
+		
 		let expr = &node.expr;
 		let value: serde_json::Value = if let Ok(v) = parse2::<LitInt>(expr.to_token_stream()) {
 			v.base10_parse::<u32>()?.into()
@@ -453,7 +544,10 @@ impl Processor {
 		};
 
 		if self.dictionary.config.contains_key(&name) {
-			panic!("Multiple definitions for klipper constant {}", name);
+			panic!("Multiple definitions for klipper constant {} (first seen in {:?}, duplicate in {})", 
+				name, 
+				self.dictionary.config.get(&name),
+				self.current_file.as_ref().unwrap().display());
 		}
 		self.dictionary.config.insert(name, value);
 
@@ -626,47 +720,58 @@ impl Processor {
 		let data_dictionary = self.write_data_dictionary();
 
 		let cfg_opts = self.generate_cfg.as_ref().map(|cfg| {
+			println!("cargo:warning=anchor_codegen: Generating type definitions...");
 			let (transport_name, transport_type) = &cfg.transport.as_ref().unwrap();
 			let context = &cfg.context;
+			println!("cargo:warning=anchor_codegen:   Transport name: {}", quote!(#transport_name));
+			println!("cargo:warning=anchor_codegen:   Transport type: {}", quote!(#transport_type));
+			println!("cargo:warning=anchor_codegen:   Context: {}", quote!(#context));
 			quote! {
 				use #transport_name;
 				type Output = &'static #transport_type;
 				type Context<'ctx> = #context;
 			}
 		});
-		write!(
-			target,
-			"{}",
-			quote! {
-				#![allow(dead_code)]
-				#![allow(unused_variables)]
-				#![allow(clippy::all)]
+		
+		// Debug: Check if cfg_opts is present
+		if cfg_opts.is_some() {
+			println!("cargo:warning=anchor_codegen: cfg_opts is present, will generate type definitions");
+		} else {
+			println!("cargo:warning=anchor_codegen: WARNING: cfg_opts is None, no type definitions will be generated!");
+		}
+		
+		let output = quote! {
+			#![allow(dead_code)]
+			#![allow(unused_variables)]
+			#![allow(clippy::all)]
 
-				use ::anchor::{transport_output::TransportOutput, transport::Transport};
-				pub mod message_handlers {
-					use super::*;
-					#(#message_handlers)*
-				}
-				pub mod static_strings {
-					#(#static_string_ids)*
-				}
-
-				#cfg_opts
-
-				pub(crate) struct Config;
-
-				impl ::anchor::transport::Config for Config {
-					type TransportOutput = Output;
-					type Context<'ctx> = Context<'ctx>;
-					#dispatcher
-				}
-
-				pub(crate) const CONFIG: Config = Config;
-				pub(crate) static TRANSPORT: Transport<Config> = Transport::new(&CONFIG, &TRANSPORT_OUTPUT);
-
-				#data_dictionary
+			use ::anchor::{transport_output::TransportOutput, transport::Transport};
+			pub mod message_handlers {
+				use super::*;
+				#(#message_handlers)*
 			}
-		)?;
+			pub mod static_strings {
+				#(#static_string_ids)*
+			}
+
+			#cfg_opts
+
+			pub(crate) struct Config;
+
+			impl ::anchor::transport::Config for Config {
+				type TransportOutput = Output;
+				type Context<'ctx> = Context<'ctx>;
+				#dispatcher
+			}
+
+			pub(crate) const CONFIG: Config = Config;
+			pub(crate) static TRANSPORT: Transport<Config> = Transport::new(&CONFIG, &TRANSPORT_OUTPUT);
+
+			#data_dictionary
+		};
+		
+		println!("cargo:warning=anchor_codegen: Generated {} tokens", output.to_string().len());
+		write!(target, "{}", output)?;
 		Ok(())
 	}
 
