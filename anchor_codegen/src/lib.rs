@@ -112,8 +112,10 @@ impl ConfigBuilder {
 	/// Runs the build step
 	pub fn build(self) {
 		// Debug output for entry points
+        #[cfg(feature = "verbose_build_debug_log")]
 		println!("cargo:warning=anchor_codegen: Entry points ({}):", self.entries.len());
 		for (path, module_path) in &self.entries {
+            #[cfg(feature = "verbose_build_debug_log")]
 			println!("cargo:warning=anchor_codegen:   - {} (module: {})", 
 				path.display(), 
 				if module_path.is_empty() { 
@@ -186,19 +188,23 @@ impl ConfigBuilder {
 		let constant_count = processor.dictionary.config.len();
 		let enumeration_count = processor.dictionary.enumerations.len();
 		
-		println!("cargo:warning=anchor_codegen: ===== SUMMARY =====");
-		println!("cargo:warning=anchor_codegen: Commands: {}", command_count);
-		println!("cargo:warning=anchor_codegen: Replies: {}", reply_count);
-		println!("cargo:warning=anchor_codegen: Outputs: {}", output_count);
-		println!("cargo:warning=anchor_codegen: Static Strings: {}", static_string_count);
-		println!("cargo:warning=anchor_codegen: Constants: {}", constant_count);
-		println!("cargo:warning=anchor_codegen: Enumerations: {}", enumeration_count);
-		println!("cargo:warning=anchor_codegen: Generate Config: {}", if processor.generate_cfg.is_some() { "YES" } else { "NO" });
-		println!("cargo:warning=anchor_codegen: ===================");
+        #[cfg(feature = "verbose_build_debug_log")]
+        {
+            println!("cargo:warning=anchor_codegen: ===== SUMMARY =====");
+            println!("cargo:warning=anchor_codegen: Commands: {}", command_count);
+            println!("cargo:warning=anchor_codegen: Replies: {}", reply_count);
+            println!("cargo:warning=anchor_codegen: Outputs: {}", output_count);
+            println!("cargo:warning=anchor_codegen: Static Strings: {}", static_string_count);
+            println!("cargo:warning=anchor_codegen: Constants: {}", constant_count);
+            println!("cargo:warning=anchor_codegen: Enumerations: {}", enumeration_count);
+            println!("cargo:warning=anchor_codegen: Generate Config: {}", if processor.generate_cfg.is_some() { "YES" } else { "NO" });
+            println!("cargo:warning=anchor_codegen: ===================");
+        }
 
 		// panic!("{:#?}", processor.dictionary);
 
 		let outfile = format!("{}/_anchor_config.rs", env::var("OUT_DIR").expect("could not get OUT_DIR"));
+        #[cfg(feature = "verbose_build_debug_log")]
 		println!("cargo:warning=anchor_codegen: Writing output to: {}", outfile);
 		let mut f = File::create(&outfile).expect("Could not create output file");
 		if let Err(e) = processor.write(&mut f) {
@@ -214,6 +220,7 @@ impl ConfigBuilder {
 			println!("cargo:warning=anchor_codegen: ERROR syncing _anchor_config.rs: {}", e);
 			panic!("Failed to sync anchor config: {}", e);
 		}
+        #[cfg(feature = "verbose_build_debug_log")]
 		println!("cargo:warning=anchor_codegen: Successfully wrote _anchor_config.rs");
 	}
 }
@@ -382,6 +389,7 @@ impl Processor {
 
 	fn process_one(&mut self, task: Task) -> Result<()> {
 		println!("cargo:rerun-if-changed={}", task.path.display());
+        #[cfg(feature = "verbose_build_debug_log")]
 		println!("cargo:warning=anchor_codegen: Scanning {} (module path: {})", 
 			task.path.display(),
 			if task.module_path.is_empty() { 
@@ -489,9 +497,11 @@ impl Processor {
 		let mut c = parse2::<Command>(func.to_token_stream())?;
 		c.module = Some(self.current_module.clone());
 		if check_is_enabled(&func.attrs) {
+            #[cfg(feature = "verbose_build_debug_log")]
 			println!("cargo:warning=anchor_codegen:   Found command: {} in {}", c.name, self.current_file.as_ref().unwrap().display());
 			self.add_message(c.name.to_string(), Message::Command(c));
 		} else {
+            #[cfg(feature = "verbose_build_debug_log")]
 			println!("cargo:warning=anchor_codegen:   Skipped command: {} (disabled by cfg)", c.name);
 		}
 		Ok(())
@@ -512,12 +522,14 @@ impl Processor {
 	}
 
 	fn process_config_generate(&mut self, mac: &Macro) -> Result<()> {
+        #[cfg(feature = "verbose_build_debug_log")]
 		println!("cargo:warning=anchor_codegen:   Found klipper_config_generate! macro in {}", 
 			self.current_file.as_ref().unwrap().display());
 		if self.generate_cfg.is_some() {
 			return Err(anyhow::anyhow!("Multiple klipper_config_generate calls found!"));
 		}
 		let cfg = parse2::<GenerateConfig>(mac.tokens.clone())?;
+        #[cfg(feature = "verbose_build_debug_log")]
 		println!("cargo:warning=anchor_codegen:   Transport: {:?}", cfg.transport);
 		self.generate_cfg = Some(cfg);
 		Ok(())
@@ -529,6 +541,7 @@ impl Processor {
 		}
 
 		let name = node.ident.to_string();
+        #[cfg(feature = "verbose_build_debug_log")]
 		println!("cargo:warning=anchor_codegen:   Found constant: {} in {}", name, self.current_file.as_ref().unwrap().display());
 		
 		let expr = &node.expr;
@@ -720,11 +733,15 @@ impl Processor {
 		let data_dictionary = self.write_data_dictionary();
 
 		let cfg_opts = self.generate_cfg.as_ref().map(|cfg| {
+            #[cfg(feature = "verbose_build_debug_log")]
 			println!("cargo:warning=anchor_codegen: Generating type definitions...");
 			let (transport_name, transport_type) = &cfg.transport.as_ref().unwrap();
 			let context = &cfg.context;
+            #[cfg(feature = "verbose_build_debug_log")]
 			println!("cargo:warning=anchor_codegen:   Transport name: {}", quote!(#transport_name));
+            #[cfg(feature = "verbose_build_debug_log")]
 			println!("cargo:warning=anchor_codegen:   Transport type: {}", quote!(#transport_type));
+            #[cfg(feature = "verbose_build_debug_log")]
 			println!("cargo:warning=anchor_codegen:   Context: {}", quote!(#context));
 			quote! {
 				use #transport_name;
@@ -735,8 +752,10 @@ impl Processor {
 		
 		// Debug: Check if cfg_opts is present
 		if cfg_opts.is_some() {
+            #[cfg(feature = "verbose_build_debug_log")]
 			println!("cargo:warning=anchor_codegen: cfg_opts is present, will generate type definitions");
 		} else {
+            #[cfg(feature = "verbose_build_debug_log")]
 			println!("cargo:warning=anchor_codegen: WARNING: cfg_opts is None, no type definitions will be generated!");
 		}
 		
@@ -770,6 +789,7 @@ impl Processor {
 			#data_dictionary
 		};
 		
+        #[cfg(feature = "verbose_build_debug_log")]
 		println!("cargo:warning=anchor_codegen: Generated {} tokens", output.to_string().len());
 		write!(target, "{}", output)?;
 		Ok(())
