@@ -32,13 +32,11 @@
 //! (or modifying the existing) `build.rs` file. This file must exist in the same directory as
 //! `Cargo.toml`. A minimal example:
 //! ```
-//! fn main() {
-//!     anchor_codegen::ConfigBuilder::new()
-//!         .entry("src/main.rs")
-//!         .set_version("jig 0.1")
-//!         .set_build_versions("rust: someversion")
-//!         .build()
-//! }
+//! anchor_codegen::ConfigBuilder::new()
+//!     .entry("src/main.rs")
+//!     .set_version("jig 0.1")
+//!     .set_build_versions("rust: someversion")
+//!     .build()
 //! ```
 //!
 //! See `anchor_codegen::ConfigBuilder` for more information on supported build step options.

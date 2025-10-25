@@ -35,7 +35,7 @@ impl Enumeration {
 		let attrs = self
 			.attrs
 			.iter()
-            .filter(|a| !a.path().is_ident("klipper_enumeration"));
+			.filter(|a| !a.path().is_ident("klipper_enumeration"));
 		let visibility = &self.visibility;
 		let enum_token = &self.enum_token;
 		let ident = &self.ident;
@@ -258,8 +258,9 @@ impl Parse for Enumeration {
 	}
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Default, Debug, Clone, Copy, Eq, PartialEq)]
 enum RenameFormat {
+	#[default]
 	None,
 	LowerCase,
 	UpperCase,
@@ -286,11 +287,11 @@ impl RenameFormat {
 	}
 }
 
-impl Default for RenameFormat {
-	fn default() -> Self {
-		Self::None
-	}
-}
+// impl Default for RenameFormat {
+// 	fn default() -> Self {
+// 		Self::None
+// 	}
+// }
 
 impl FromStr for RenameFormat {
 	type Err = ();

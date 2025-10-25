@@ -26,7 +26,18 @@ pub struct ScratchOutput<const MAX_SIZE: usize = 64> {
 	idx: usize,
 }
 
+impl<const MAX_SIZE: usize> Default for ScratchOutput<MAX_SIZE> {
+	fn default() -> Self {
+		Self { buffer: [0u8; MAX_SIZE], idx: 0 }
+	}
+}
+
 impl<const MAX_SIZE: usize> ScratchOutput<MAX_SIZE> {
+	/// Create a new buffer
+	pub const fn new() -> Self {
+		Self { buffer: [0u8; MAX_SIZE], idx: 0 }
+	}
+
 	/// Retrieve the currently built buffer
 	pub fn result(&self) -> &[u8] {
 		&self.buffer[..self.idx]
@@ -35,11 +46,6 @@ impl<const MAX_SIZE: usize> ScratchOutput<MAX_SIZE> {
 	/// Reset the buffer, clearing it
 	pub fn reset(&mut self) {
 		self.idx = 0;
-	}
-
-	/// Create a new buffer
-	pub const fn new() -> Self {
-		Self { buffer: [0u8; MAX_SIZE], idx: 0 }
 	}
 }
 

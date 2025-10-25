@@ -114,7 +114,7 @@ impl ConfigBuilder {
 		// Debug output for entry points
         #[cfg(feature = "verbose_build_debug_log")]
 		println!("cargo:warning=anchor_codegen: Entry points ({}):", self.entries.len());
-		for (path, module_path) in &self.entries {
+		for (_path, _module_path) in &self.entries {
             #[cfg(feature = "verbose_build_debug_log")]
 			println!("cargo:warning=anchor_codegen:   - {} (module: {})", 
 				path.display(), 
@@ -179,17 +179,16 @@ impl ConfigBuilder {
 
 		processor.assign_ids();
 		processor.finalize_dictionary();
-
-		// Print summary
-		let command_count = processor.messages.values().filter(|m| matches!(m, Message::Command(_))).count();
-		let reply_count = processor.messages.values().filter(|m| matches!(m, Message::Reply(_))).count();
-		let output_count = processor.messages.values().filter(|m| matches!(m, Message::Output(_))).count();
-		let static_string_count = processor.static_strings.strings.len();
-		let constant_count = processor.dictionary.config.len();
-		let enumeration_count = processor.dictionary.enumerations.len();
 		
         #[cfg(feature = "verbose_build_debug_log")]
         {
+			// Print summary
+			let command_count = processor.messages.values().filter(|m| matches!(m, Message::Command(_))).count();
+			let reply_count = processor.messages.values().filter(|m| matches!(m, Message::Reply(_))).count();
+			let output_count = processor.messages.values().filter(|m| matches!(m, Message::Output(_))).count();
+			let static_string_count = processor.static_strings.strings.len();
+			let constant_count = processor.dictionary.config.len();
+			let enumeration_count = processor.dictionary.enumerations.len();
             println!("cargo:warning=anchor_codegen: ===== SUMMARY =====");
             println!("cargo:warning=anchor_codegen: Commands: {}", command_count);
             println!("cargo:warning=anchor_codegen: Replies: {}", reply_count);
@@ -340,7 +339,7 @@ impl<'ast> Visit<'ast> for Processor {
 
 	fn visit_item_fn(&mut self, node: &'ast ItemFn) {
 		for attr in &node.attrs {
-			if path_last_name(attr.path()).map_or(false, |i| i == "klipper_command") {
+			if path_last_name(attr.path()).is_some_and(|i| i == "klipper_command") {
 				check_error!(self, self.process_command(node));
 				break;
 			}
@@ -353,7 +352,7 @@ impl<'ast> Visit<'ast> for Processor {
 
 	fn visit_item_const(&mut self, node: &'ast ItemConst) {
 		for attr in &node.attrs {
-			if path_last_name(attr.path()).map_or(false, |i| i == "klipper_constant") {
+			if path_last_name(attr.path()).is_some_and(|i| i == "klipper_constant") {
 				check_error!(self, self.process_constant(node));
 				break;
 			}

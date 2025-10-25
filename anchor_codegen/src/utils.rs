@@ -1,4 +1,4 @@
-use syn::{spanned::Spanned, Attribute, Error, Expr, Lit, LitStr, Meta, MetaList};
+use syn::{spanned::Spanned, Attribute, Error, Expr, Lit, LitStr, Meta};
 
 pub fn visit_attribs(
 	attrs: &[Attribute],
@@ -96,10 +96,10 @@ pub fn check_is_enabled(attrs: &[Attribute]) -> bool {
 	!check_is_disabled(attrs)
 }
 
-pub fn get_lit_str(lit: &Lit) -> syn::Result<&LitStr> {
-	if let Lit::Str(s) = lit {
-		Ok(s)
-	} else {
-		Err(Error::new(lit.span(), "expected attribute to be a string"))
-	}
-}
+// pub fn get_lit_str(lit: &Lit) -> syn::Result<&LitStr> {
+// 	if let Lit::Str(s) = lit {
+// 		Ok(s)
+// 	} else {
+// 		Err(Error::new(lit.span(), "expected attribute to be a string"))
+// 	}
+// }
