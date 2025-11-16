@@ -74,3 +74,19 @@ pub fn get_lit_str(lit: &Lit) -> syn::Result<&LitStr> {
         Err(Error::new(lit.span(), "expected attribute to be a string"))
     }
 }
+
+pub fn to_camel_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = true;
+    for c in s.chars() {
+        if c == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.push(c.to_uppercase().next().unwrap_or(c));
+            capitalize_next = false;
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}

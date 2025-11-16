@@ -524,6 +524,7 @@ impl Processor {
                         type_: syn::parse_str("u32").unwrap(),
                     },
                 ],
+                error_type: None,
             }),
         );
     }
@@ -615,6 +616,7 @@ impl Processor {
         let message_handlers = self.write_message_handlers();
         let static_string_ids = self.write_static_string_ids();
         let data_dictionary = self.write_data_dictionary();
+        let error_enum = self.write_error_enum();
 
         let cfg_opts = self.generate_cfg.as_ref().map(|cfg| {
             let (transport_name, transport_type) = &cfg.transport.as_ref().unwrap();
@@ -644,11 +646,14 @@ impl Processor {
 
                 #cfg_opts
 
+                #error_enum
+
                 pub(crate) struct Config;
 
                 impl ::anchor::transport::Config for Config {
                     type TransportOutput = Output;
                     type Context<'ctx> = Context<'ctx>;
+                    type CommandError = KlipperCommandError;
                     #dispatcher
                 }
 
@@ -679,11 +684,50 @@ impl Processor {
 
         let handlers: Vec<_> = handlers.into_iter().flatten().collect();
 
+        // Find command IDs for clear_shutdown and reset
+        let mut clear_shutdown_id = None;
+        let mut reset_id = None;
+        for m in self.messages.iter() {
+            if let Message::Command(c) = m.1 {
+                if c.name == "clear_shutdown" {
+                    clear_shutdown_id = c.id;
+                } else if c.name == "reset" {
+                    reset_id = c.id;
+                }
+            }
+        }
+        
+        let shutdown_check = if clear_shutdown_id.is_some() || reset_id.is_some() {
+            let mut allowed_cmds = Vec::new();
+            if let Some(id) = clear_shutdown_id {
+                allowed_cmds.push(quote! { #id => true, });
+            }
+            if let Some(id) = reset_id {
+                allowed_cmds.push(quote! { #id => true, });
+            }
+            quote! {
+                // Check if we're in shutdown state and command is not allowed
+                if crate::is_in_shutdown() {
+                    let allowed = match cmd {
+                        #(#allowed_cmds)*
+                        _ => false,
+                    };
+                    if !allowed {
+                        // Command not allowed in shutdown state, ignore it
+                        return Ok(());
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        };
+        
         quote! {
-            fn dispatch(cmd: u16, frame: &mut &[u8], context: &mut Context) -> Result<(), ::anchor::encoding::ReadError> {
+            fn dispatch(cmd: u16, frame: &mut &[u8], context: &mut Context) -> Result<(), KlipperCommandError> {
+                #shutdown_check
                 match cmd {
                     #(#handlers)*
-                    _unknown_cmd => Err(::anchor::encoding::ReadError),
+                    _unknown_cmd => Err(KlipperCommandError::ReadError(::anchor::encoding::ReadError)),
                 }
             }
         }
@@ -711,12 +755,25 @@ impl Processor {
                     let ctx_arg = c.has_context.then(|| quote! {
                         context,
                     });
-                    quote! {
-                        #[allow(unused_variables)]
-                        pub fn #handler_name(data: &mut &[u8], context: &mut Context) -> Result<(), ::anchor::encoding::ReadError> {
-                            #(#args)*
+                    
+                    // Handle error propagation if command returns Result<(), E>
+                    let error_handling = if let Some(_err_ty) = &c.error_type {
+                        let variant_name = format_ident!("{}", utils::to_camel_case(&c.name.to_string()));
+                        quote! {
+                            #target(#ctx_arg #(#call_args),*).map_err(|e| KlipperCommandError::#variant_name(e))
+                        }
+                    } else {
+                        quote! {
                             #target(#ctx_arg #(#call_args),*);
                             Ok(())
+                        }
+                    };
+                    
+                    quote! {
+                        #[allow(unused_variables)]
+                        pub fn #handler_name(data: &mut &[u8], context: &mut Context) -> Result<(), KlipperCommandError> {
+                            #(#args)*
+                            #error_handling
                         }
                     }
                 }
@@ -815,6 +872,66 @@ impl Processor {
                 }
             })
             .collect()
+    }
+
+    fn write_error_enum(&self) -> TokenStream {
+        // Collect all unique error types from commands
+        let mut error_variants = Vec::new();
+        let mut seen_errors = std::collections::BTreeSet::new();
+        
+        for m in self.messages.values() {
+            if let Message::Command(c) = m {
+                if let Some(err_ty) = &c.error_type {
+                    // Use camel case variant name based on command name
+                    let variant_name = format_ident!("{}", utils::to_camel_case(&c.name.to_string()));
+                    let error_type = err_ty;
+                    
+                    // Create a unique key for deduplication
+                    let key = format!("{:?}", error_type);
+                    if !seen_errors.contains(&key) {
+                        seen_errors.insert(key);
+                        // Use fully qualified path for error type
+                        error_variants.push(quote! {
+                            #variant_name(crate::#error_type),
+                        });
+                    }
+                }
+            }
+        }
+        
+        // Always include ReadError variant
+        error_variants.push(quote! {
+            ReadError(::anchor::encoding::ReadError),
+        });
+        
+        if error_variants.is_empty() {
+            // If no error variants, just have ReadError
+            quote! {
+                #[derive(Debug)]
+                pub enum KlipperCommandError {
+                    ReadError(::anchor::encoding::ReadError),
+                }
+                
+                impl From<::anchor::encoding::ReadError> for KlipperCommandError {
+                    fn from(e: ::anchor::encoding::ReadError) -> Self {
+                        KlipperCommandError::ReadError(e)
+                    }
+                }
+            }
+        } else {
+            quote! {
+                #[derive(Debug)]
+                pub enum KlipperCommandError {
+                    #(#error_variants)*
+                }
+                
+                impl From<::anchor::encoding::ReadError> for KlipperCommandError {
+                    fn from(e: ::anchor::encoding::ReadError) -> Self {
+                        KlipperCommandError::ReadError(e)
+                    }
+                }
+            }
+        }
     }
 
     fn write_data_dictionary(&self) -> TokenStream {

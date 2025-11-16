@@ -30,11 +30,12 @@ fn crc16(buf: &[u8]) -> u16 {
 pub trait Config {
     type TransportOutput: TransportOutput;
     type Context<'c>;
+    type CommandError: std::fmt::Debug;
     fn dispatch<'c>(
         cmd: u16,
         frame: &mut &[u8],
         context: &mut Self::Context<'c>,
-    ) -> Result<(), ReadError>;
+    ) -> Result<(), Self::CommandError>;
 }
 
 /// Protocol transport implementation
@@ -55,7 +56,10 @@ impl<C: Config> Transport<C> {
     }
 
     /// Decodes messages from an `InputBuffer`
-    pub fn receive<'c>(&self, input: &mut impl InputBuffer, mut context: C::Context<'c>) {
+    pub fn receive<'c>(&self, input: &mut impl InputBuffer, mut context: C::Context<'c>) -> Result<(), C::CommandError>
+    where
+        C::CommandError: From<ReadError>,
+    {
         // Drive state machine forward until we either have no
         // input or know we don't have enough input.
         let mut data = input.data();
@@ -113,7 +117,7 @@ impl<C: Config> Transport<C> {
                         ((seq + 1) & MESSAGE_SEQ_MASK) | MESSAGE_DEST,
                         Ordering::SeqCst,
                     );
-                    let _ = self.parse_frame(frame, &mut context);
+                    self.parse_frame(frame, &mut context)?;
                 }
                 self.encode_acknak();
             }
@@ -123,15 +127,19 @@ impl<C: Config> Transport<C> {
         if consumed > 0 {
             input.pop(consumed);
         }
+        Ok(())
     }
 
     fn parse_frame<'c>(
         &self,
         mut frame: &[u8],
         context: &mut C::Context<'c>,
-    ) -> Result<(), ReadError> {
+    ) -> Result<(), C::CommandError>
+    where
+        C::CommandError: From<ReadError>,
+    {
         while !frame.is_empty() {
-            let cmd = <u16 as Readable>::read(&mut frame)?;
+            let cmd = <u16 as Readable>::read(&mut frame).map_err(Into::into)?;
             C::dispatch(cmd, &mut frame, context)?;
         }
         Ok(())

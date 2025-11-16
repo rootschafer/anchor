@@ -10,6 +10,7 @@ anchor = { path = "../anchor", features = ["std"] }
 tempfile = "3"
 nix = { version = "0.25", features = ["term", "fs"] }
 lazy_static = "1"
+serde_json = "1"
 
 [build-dependencies]
 anchor_codegen = { path = "../anchor_codegen" }

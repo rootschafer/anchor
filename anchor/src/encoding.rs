@@ -1,6 +1,7 @@
 use crate::output_buffer::OutputBuffer;
 
 /// Error type for representing a failed read
+#[derive(Debug)]
 pub struct ReadError;
 
 /// Trait implemented for types that can be read from an input message

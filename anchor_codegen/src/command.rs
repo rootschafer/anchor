@@ -31,6 +31,7 @@ pub struct Command {
     pub module: Option<Vec<Ident>>,
     pub has_context: bool,
     pub args: Vec<Arg>,
+    pub error_type: Option<Type>,
 }
 
 impl Command {
@@ -105,6 +106,43 @@ impl Parse for Command {
 
         let name = func.sig.ident;
 
+        // Check if return type is Result<(), E>
+        let error_type = if let syn::ReturnType::Type(_, return_ty) = &func.sig.output {
+            if let syn::Type::Path(type_path) = return_ty.as_ref() {
+                if let Some(segment) = type_path.path.segments.last() {
+                    if segment.ident == "Result" {
+                        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                            if args.args.len() == 2 {
+                                // Check if first arg is () and extract second arg as error type
+                                let mut iter = args.args.iter();
+                                if let (Some(syn::GenericArgument::Type(syn::Type::Tuple(tuple))), Some(syn::GenericArgument::Type(err_ty))) = (iter.next(), iter.next()) {
+                                    if tuple.elems.is_empty() {
+                                        Some(err_ty.clone())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         Ok(Command {
             name: name.clone(),
             module: None,
@@ -112,6 +150,7 @@ impl Parse for Command {
             id: None,
             has_context,
             args,
+            error_type,
         })
     }
 }
