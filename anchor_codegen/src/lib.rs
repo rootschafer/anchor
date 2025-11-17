@@ -684,25 +684,32 @@ impl Processor {
 
         let handlers: Vec<_> = handlers.into_iter().flatten().collect();
 
-        // Find command IDs for clear_shutdown and reset
+        // Find command IDs for clear_shutdown, reset, and config_reset
+        // These commands are allowed in shutdown state to allow recovery
         let mut clear_shutdown_id = None;
         let mut reset_id = None;
+        let mut config_reset_id = None;
         for m in self.messages.iter() {
             if let Message::Command(c) = m.1 {
                 if c.name == "clear_shutdown" {
                     clear_shutdown_id = c.id;
                 } else if c.name == "reset" {
                     reset_id = c.id;
+                } else if c.name == "config_reset" {
+                    config_reset_id = c.id;
                 }
             }
         }
         
-        let shutdown_check = if clear_shutdown_id.is_some() || reset_id.is_some() {
+        let shutdown_check = if clear_shutdown_id.is_some() || reset_id.is_some() || config_reset_id.is_some() {
             let mut allowed_cmds = Vec::new();
             if let Some(id) = clear_shutdown_id {
                 allowed_cmds.push(quote! { #id => true, });
             }
             if let Some(id) = reset_id {
+                allowed_cmds.push(quote! { #id => true, });
+            }
+            if let Some(id) = config_reset_id {
                 allowed_cmds.push(quote! { #id => true, });
             }
             quote! {
