@@ -38,6 +38,85 @@ This repo contains the following folders:
 
 Anchor powers the [Beacon3D Surface Scanner](https://beacon3d.com/).
 
+## Features
+
+### Error Handling
+
+Commands can return errors using Rust's `Result` type:
+
+```rust
+#[derive(Debug)]
+pub enum ConfigError {
+    NotFound,
+}
+
+#[klipper_command]
+fn get_config() -> Result<(), ConfigError> {
+    // ... implementation ...
+    if config_not_found {
+        Err(ConfigError::NotFound)
+    } else {
+        Ok(())
+    }
+}
+```
+
+Errors are automatically wrapped in a generated `KlipperCommandError` enum and can be handled in your main loop when calling `Transport::receive()`.
+
+### Command Flags
+
+Commands can be marked with flags to control their behavior. Currently supported flags:
+
+- `HF_IN_SHUTDOWN`: Allows the command to execute during shutdown state
+
+```rust
+use anchor::KlipperCommandFlags;
+
+#[klipper_command(flags = KlipperCommandFlags::HF_IN_SHUTDOWN)]
+fn clear_shutdown() {
+    // This command can run even when system is in shutdown state
+}
+```
+
+Commands without this flag will be ignored during shutdown, allowing only recovery commands to execute.
+
+### Shutdown State Filtering
+
+When the `shutdown-filtering` feature is enabled, Anchor can automatically filter commands based on shutdown state. This requires:
+
+1. Enabling the feature in both `anchor` and `anchor_codegen`:
+   ```toml
+   [dependencies]
+   anchor = { path = "../anchor", features = ["shutdown-filtering"] }
+   
+   [build-dependencies]
+   anchor_codegen = { path = "../anchor_codegen", features = ["shutdown-filtering"] }
+   ```
+
+2. Implementing `CheckShutdown` on your context type:
+   ```rust
+   use anchor::CheckShutdown;
+   
+   struct MyContext<'a> {
+       is_shutdown: &'a bool,
+   }
+   
+   impl<'a> CheckShutdown for MyContext<'a> {
+       fn is_shutdown(&self) -> bool {
+           *self.is_shutdown
+       }
+   }
+   ```
+
+3. Passing the context when calling `receive()`:
+   ```rust
+   let mut is_shutdown = false;
+   let context = MyContext { is_shutdown: &is_shutdown };
+   transport.receive(&mut buffer, context)?;
+   ```
+
+Commands marked with `HF_IN_SHUTDOWN` will be allowed to execute during shutdown, while others will be automatically filtered out.
+
 ## Documentation
 
 Documentation can be found [here](https://anchor.annex.engineering).

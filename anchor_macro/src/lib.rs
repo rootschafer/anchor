@@ -236,7 +236,8 @@ pub fn klipper_enumeration(item: TokenStream) -> TokenStream {
 /// This attribute is put on functions that should be exposed to the remote end. Only free standing
 /// functions are supported.
 ///
-/// An example usage:
+/// # Basic Usage
+///
 /// ```
 /// #[klipper_command]
 /// fn finalize_config(context: &mut State, crc: u32) {
@@ -244,7 +245,48 @@ pub fn klipper_enumeration(item: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// Argumenst are automatically converted to protocol compatible types and from wire format back to
+/// # Error Handling
+///
+/// Commands can return errors using `Result<(), CustomError>`:
+///
+/// ```
+/// #[derive(Debug)]
+/// pub enum ConfigError {
+///     NotFound,
+/// }
+///
+/// #[klipper_command]
+/// fn get_config() -> Result<(), ConfigError> {
+///     if config_not_found {
+///         Err(ConfigError::NotFound)
+///     } else {
+///         Ok(())
+///     }
+/// }
+/// ```
+///
+/// Errors are automatically wrapped in a generated `KlipperCommandError` enum and can be
+/// handled in your main loop when calling `Transport::receive()`.
+///
+/// # Command Flags
+///
+/// Commands can be marked with flags to control their behavior:
+///
+/// ```
+/// use anchor::KlipperCommandFlags;
+///
+/// #[klipper_command(flags = KlipperCommandFlags::HF_IN_SHUTDOWN)]
+/// fn clear_shutdown() {
+///     // This command can execute during shutdown state
+/// }
+/// ```
+///
+/// When the `shutdown-filtering` feature is enabled, commands without `HF_IN_SHUTDOWN` will
+/// be automatically filtered out during shutdown state.
+///
+/// # Arguments
+///
+/// Arguments are automatically converted to protocol compatible types and from wire format back to
 /// Rust values.
 ///
 /// A context argument may optionally be included. If included, this argument **must** be called
