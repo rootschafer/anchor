@@ -4,6 +4,16 @@ use crate::output_buffer::OutputBuffer;
 use crate::transport_output::TransportOutput;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
+/// Trait for checking if the system is in shutdown state
+///
+/// This trait allows efficient shutdown state checking from both the transport layer
+/// and command handlers. Users can implement this trait on their context type to provide
+/// zero-cost shutdown state access.
+pub trait CheckShutdown {
+    /// Returns `true` if the system is currently in shutdown state
+    fn is_shutdown(&self) -> bool;
+}
+
 const MESSAGE_HEADER_SIZE: usize = 2;
 const MESSAGE_TRAILER_SIZE: usize = 3;
 const MESSAGE_LENGTH_MIN: usize = MESSAGE_HEADER_SIZE + MESSAGE_TRAILER_SIZE;
@@ -29,7 +39,7 @@ fn crc16(buf: &[u8]) -> u16 {
 
 pub trait Config {
     type TransportOutput: TransportOutput;
-    type Context<'c>;
+    type Context<'c>: CheckShutdown;
     type CommandError: std::fmt::Debug;
     fn dispatch<'c>(
         cmd: u16,

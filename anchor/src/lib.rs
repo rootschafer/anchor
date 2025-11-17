@@ -129,6 +129,9 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+// Re-export KlipperCommandFlags for use in #[klipper_command(flags = ...)]
+pub use anchor_types::KlipperCommandFlags;
+
 #[doc(hidden)]
 pub mod encoding;
 #[doc(hidden)]
@@ -147,5 +150,5 @@ pub use anchor_macro::*;
 pub use fifo_buffer::FifoBuffer;
 pub use input_buffer::{InputBuffer, SliceInputBuffer};
 pub use output_buffer::{OutputBuffer, ScratchOutput};
-pub use transport::Transport;
+pub use transport::{CheckShutdown, Transport};
 pub use transport_output::TransportOutput;

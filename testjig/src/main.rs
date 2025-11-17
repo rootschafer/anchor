@@ -4,7 +4,7 @@ use std::{
 	os::unix::{io::RawFd, net::UnixStream},
 	path::PathBuf,
 	process::{self, Command},
-	sync::{Arc, Mutex},
+	sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex},
 	time::Duration,
 };
 
@@ -12,16 +12,24 @@ use anchor::*;
 use lazy_static::lazy_static;
 use tempfile::TempDir;
 
-lazy_static! {
-	static ref SHUTDOWN_STATE: Mutex<bool> = Mutex::new(false);
+// Atomic flag for commands to signal that shutdown should be cleared
+static CLEAR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+// Context type that implements CheckShutdown for efficient shutdown state checking
+struct ShutdownContext<'a> {
+	is_shutdown: &'a bool,
 }
 
-// Helper function to check if we're in shutdown state (for generated code)
-pub fn is_in_shutdown() -> bool {
-	*SHUTDOWN_STATE.lock().unwrap()
+impl<'a> CheckShutdown for ShutdownContext<'a> {
+	fn is_shutdown(&self) -> bool {
+		*self.is_shutdown
+	}
 }
 
-klipper_config_generate!(transport = crate::TRANSPORT_OUTPUT: crate::BufferTransportOutput);
+klipper_config_generate!(
+	transport = crate::TRANSPORT_OUTPUT: crate::BufferTransportOutput,
+	context = crate::ShutdownContext<'ctx>
+);
 
 struct KlipperInstance {
 	_temp_dir: TempDir,
@@ -260,13 +268,6 @@ fn main() {
 			eprintln!("Emergency stop command sent, waiting for MCU to enter shutdown state...");
 			std::thread::sleep(Duration::from_secs(1));
 
-			// Validate shutdown state
-			if is_in_shutdown() {
-				eprintln!("✓ MCU is in shutdown state");
-			} else {
-				eprintln!("✗ MCU is NOT in shutdown state (unexpected)");
-			}
-
 			// Step 2: Send firmware_restart command
 			std::thread::sleep(Duration::from_secs(1));
 			if let Err(e) = instance_clone.firmware_restart() {
@@ -274,33 +275,36 @@ fn main() {
 			} else {
 				eprintln!("Firmware restart command sent, waiting for MCU to recover...");
 				std::thread::sleep(Duration::from_secs(2));
-
-				// Validate recovery
-				if !is_in_shutdown() {
-					eprintln!("✓ MCU recovered from shutdown state");
-				} else {
-					eprintln!("✗ MCU is still in shutdown state (unexpected)");
-				}
 			}
 		}
 	});
 
 	let mut recv = [0u8; 128];
 	let mut rcvbuf: Vec<u8> = Vec::new();
+	let mut is_shutdown = false; // Local variable for zero-cost reads in happy path
+	
 	loop {
+		// Check atomic only when in shutdown state (optimized happy path)
+		if is_shutdown && CLEAR_SHUTDOWN.load(Ordering::Relaxed) {
+			is_shutdown = false;
+			CLEAR_SHUTDOWN.store(false, Ordering::Relaxed);
+			eprintln!("✓ MCU recovered from shutdown state");
+		}
+		
 		match nix::unistd::read(serial.master(), &mut recv) {
 			Err(nix::errno::Errno::EWOULDBLOCK) => {}
 			Err(e) => panic!("read failed: {e})"),
 			Ok(n) => {
 				rcvbuf.extend(&recv[..n]);
 
-				// Normal operation - errors are handled in receive
-				// The dispatch function will filter commands in shutdown state
-				if let Err(e) = KLIPPER_TRANSPORT.receive(&mut rcvbuf, ()) {
+				// Pass context with reference to local shutdown state
+				let context = ShutdownContext { is_shutdown: &is_shutdown };
+				if let Err(e) = KLIPPER_TRANSPORT.receive(&mut rcvbuf, context) {
 					match e {
 						crate::_anchor_config::KlipperCommandError::EmergencyStop(_) => {
 							eprintln!("Emergency stop triggered! Entering shutdown state.");
-							// Shutdown state is already set by emergency_stop command
+							is_shutdown = true; // Set local shutdown state
+							eprintln!("✓ MCU is in shutdown state");
 							// Continue loop to process clear_shutdown/reset commands
 						}
 						crate::_anchor_config::KlipperCommandError::GetConfig(_) => {
@@ -332,12 +336,12 @@ fn cur_clock() -> u32 {
 	(c & 0xFFFFFFFF) as u32
 }
 
-#[klipper_command]
-fn get_uptime(_context: &()) {
+#[klipper_command(flags = anchor::KlipperCommandFlags::HF_IN_SHUTDOWN)]
+fn get_uptime(_context: &mut ShutdownContext) {
 	klipper_reply!(uptime, high: u32 = 2, clock: u32 = cur_clock());
 }
 
-#[klipper_command]
+#[klipper_command(flags = anchor::KlipperCommandFlags::HF_IN_SHUTDOWN)]
 fn get_clock() {
 	klipper_reply!(clock, clock: u32 = cur_clock());
 }
@@ -347,9 +351,9 @@ pub enum EmergencyStopError {
 	Triggered,
 }
 
-#[klipper_command]
+#[klipper_command(flags = anchor::KlipperCommandFlags::HF_IN_SHUTDOWN)]
 fn emergency_stop() -> Result<(), EmergencyStopError> {
-	*SHUTDOWN_STATE.lock().unwrap() = true;
+	// Shutdown state is set in main loop when this error is returned
 	Err(EmergencyStopError::Triggered)
 }
 
@@ -362,7 +366,7 @@ pub enum ConfigError {
 	NotFound,
 }
 
-#[klipper_command]
+#[klipper_command(flags = anchor::KlipperCommandFlags::HF_IN_SHUTDOWN)]
 fn get_config() -> Result<(), ConfigError> {
 	let crc = CONFIG_CRC.lock().unwrap();
 
@@ -379,15 +383,17 @@ fn get_config() -> Result<(), ConfigError> {
 	Ok(())
 }
 
-#[klipper_command]
+#[klipper_command(flags = anchor::KlipperCommandFlags::HF_IN_SHUTDOWN)]
 fn config_reset() {
 	*CONFIG_CRC.lock().unwrap() = None;
-	*SHUTDOWN_STATE.lock().unwrap() = false;
+	// Signal that shutdown should be cleared (checked in main loop)
+	CLEAR_SHUTDOWN.store(true, Ordering::Relaxed);
 }
 
-#[klipper_command]
+#[klipper_command(flags = anchor::KlipperCommandFlags::HF_IN_SHUTDOWN)]
 fn clear_shutdown() {
-	*SHUTDOWN_STATE.lock().unwrap() = false;
+	// Signal that shutdown should be cleared (checked in main loop)
+	CLEAR_SHUTDOWN.store(true, Ordering::Relaxed);
 }
 
 // #[klipper_command]

@@ -413,6 +413,30 @@ impl Processor {
     fn process_command(&mut self, func: &ItemFn) -> Result<()> {
         let mut c = parse2::<Command>(func.to_token_stream())?;
         c.module = Some(self.current_module.clone());
+        
+        // Parse flags from #[klipper_command(flags = ...)] attribute
+        for attr in &func.attrs {
+            if attr.path.is_ident("klipper_command") {
+                // Parse the attribute tokens to extract flags
+                let attr_str = quote::quote!(#attr).to_string();
+                // Look for flags = ... pattern
+                if let Some(flags_start) = attr_str.find("flags =") {
+                    let flags_part = &attr_str[flags_start + 7..];
+                    // Extract until comma or closing paren
+                    let flags_expr = flags_part
+                        .split(|c: char| c == ',' || c == ')')
+                        .next()
+                        .unwrap_or("")
+                        .trim();
+                    
+                    // Check for HF_IN_SHUTDOWN flag
+                    if flags_expr.contains("HF_IN_SHUTDOWN") {
+                        c.flags |= anchor_types::KlipperCommandFlags::HF_IN_SHUTDOWN;
+                    }
+                }
+            }
+        }
+        
         if check_is_enabled(&func.attrs) {
             self.add_message(c.name.to_string(), Message::Command(c));
         }
@@ -514,6 +538,7 @@ impl Processor {
                 module: None,
                 handler_name: format_ident!("handle_identify"),
                 has_context: false,
+                flags: anchor_types::KlipperCommandFlags::empty(), // identify doesn't need shutdown flag
                 args: vec![
                     command::Arg {
                         name: format_ident!("offset"),
@@ -635,7 +660,7 @@ impl Processor {
                 #![allow(unused_variables)]
                 #![allow(clippy::all)]
 
-                use ::anchor::{transport_output::TransportOutput, transport::Transport};
+                use ::anchor::{transport_output::TransportOutput, transport::{CheckShutdown, Transport}};
                 pub mod message_handlers {
                     use super::*;
                     #(#message_handlers)*
@@ -684,37 +709,28 @@ impl Processor {
 
         let handlers: Vec<_> = handlers.into_iter().flatten().collect();
 
-        // Find command IDs for clear_shutdown, reset, and config_reset
-        // These commands are allowed in shutdown state to allow recovery
-        let mut clear_shutdown_id = None;
-        let mut reset_id = None;
-        let mut config_reset_id = None;
+        // Collect commands that have HF_IN_SHUTDOWN flag
+        // These commands are allowed in shutdown state
+        let mut allowed_in_shutdown = Vec::new();
         for m in self.messages.iter() {
             if let Message::Command(c) = m.1 {
-                if c.name == "clear_shutdown" {
-                    clear_shutdown_id = c.id;
-                } else if c.name == "reset" {
-                    reset_id = c.id;
-                } else if c.name == "config_reset" {
-                    config_reset_id = c.id;
+                // Check if command has HF_IN_SHUTDOWN flag
+                if c.flags.contains(anchor_types::KlipperCommandFlags::HF_IN_SHUTDOWN) {
+                    if let Some(id) = c.id {
+                        allowed_in_shutdown.push(id);
+                    }
                 }
             }
         }
         
-        let shutdown_check = if clear_shutdown_id.is_some() || reset_id.is_some() || config_reset_id.is_some() {
+        let shutdown_check = if !allowed_in_shutdown.is_empty() {
             let mut allowed_cmds = Vec::new();
-            if let Some(id) = clear_shutdown_id {
-                allowed_cmds.push(quote! { #id => true, });
-            }
-            if let Some(id) = reset_id {
-                allowed_cmds.push(quote! { #id => true, });
-            }
-            if let Some(id) = config_reset_id {
+            for id in &allowed_in_shutdown {
                 allowed_cmds.push(quote! { #id => true, });
             }
             quote! {
                 // Check if we're in shutdown state and command is not allowed
-                if crate::is_in_shutdown() {
+                if context.is_shutdown() {
                     let allowed = match cmd {
                         #(#allowed_cmds)*
                         _ => false,
