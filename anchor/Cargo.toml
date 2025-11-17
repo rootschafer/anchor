@@ -11,3 +11,4 @@ anchor_types = { path = "../anchor_types" }
 
 [features]
 std = []
+shutdown-filtering = []

@@ -150,5 +150,7 @@ pub use anchor_macro::*;
 pub use fifo_buffer::FifoBuffer;
 pub use input_buffer::{InputBuffer, SliceInputBuffer};
 pub use output_buffer::{OutputBuffer, ScratchOutput};
-pub use transport::{CheckShutdown, Transport};
+#[cfg(feature = "shutdown-filtering")]
+pub use transport::CheckShutdown;
+pub use transport::Transport;
 pub use transport_output::TransportOutput;

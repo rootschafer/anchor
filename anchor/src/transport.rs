@@ -9,10 +9,24 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 /// This trait allows efficient shutdown state checking from both the transport layer
 /// and command handlers. Users can implement this trait on their context type to provide
 /// zero-cost shutdown state access.
+///
+/// This trait is only required when the `shutdown-filtering` feature is enabled.
+#[cfg(feature = "shutdown-filtering")]
 pub trait CheckShutdown {
     /// Returns `true` if the system is currently in shutdown state
     fn is_shutdown(&self) -> bool;
 }
+
+// Default implementation for common types when feature is disabled
+#[cfg(not(feature = "shutdown-filtering"))]
+pub trait CheckShutdown {
+    fn is_shutdown(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(not(feature = "shutdown-filtering"))]
+impl CheckShutdown for () {}
 
 const MESSAGE_HEADER_SIZE: usize = 2;
 const MESSAGE_TRAILER_SIZE: usize = 3;
@@ -39,7 +53,10 @@ fn crc16(buf: &[u8]) -> u16 {
 
 pub trait Config {
     type TransportOutput: TransportOutput;
+    #[cfg(feature = "shutdown-filtering")]
     type Context<'c>: CheckShutdown;
+    #[cfg(not(feature = "shutdown-filtering"))]
+    type Context<'c>;
     type CommandError: std::fmt::Debug;
     fn dispatch<'c>(
         cmd: u16,

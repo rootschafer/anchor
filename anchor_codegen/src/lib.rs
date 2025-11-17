@@ -646,10 +646,18 @@ impl Processor {
         let cfg_opts = self.generate_cfg.as_ref().map(|cfg| {
             let (transport_name, transport_type) = &cfg.transport.as_ref().unwrap();
             let context = &cfg.context;
+            let check_shutdown_import = if cfg!(feature = "shutdown-filtering") {
+                quote! {
+                    use ::anchor::transport::CheckShutdown;
+                }
+            } else {
+                quote! {}
+            };
             quote! {
                 use #transport_name;
                 type Output = &'static #transport_type;
                 type Context<'ctx> = #context;
+                #check_shutdown_import
             }
         });
         write!(
@@ -660,7 +668,10 @@ impl Processor {
                 #![allow(unused_variables)]
                 #![allow(clippy::all)]
 
-                use ::anchor::{transport_output::TransportOutput, transport::{CheckShutdown, Transport}};
+                use ::anchor::transport_output::TransportOutput;
+                use ::anchor::transport::Transport;
+                // CheckShutdown is only imported when shutdown-filtering feature is enabled
+                // (checked at codegen time, not runtime)
                 pub mod message_handlers {
                     use super::*;
                     #(#message_handlers)*
@@ -723,13 +734,14 @@ impl Processor {
             }
         }
         
-        let shutdown_check = if !allowed_in_shutdown.is_empty() {
+        let shutdown_check = if cfg!(feature = "shutdown-filtering") && !allowed_in_shutdown.is_empty() {
             let mut allowed_cmds = Vec::new();
             for id in &allowed_in_shutdown {
                 allowed_cmds.push(quote! { #id => true, });
             }
             quote! {
                 // Check if we're in shutdown state and command is not allowed
+                // (This code is only generated when shutdown-filtering feature is enabled in anchor_codegen)
                 if context.is_shutdown() {
                     let allowed = match cmd {
                         #(#allowed_cmds)*

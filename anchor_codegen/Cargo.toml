@@ -16,3 +16,6 @@ serde_json = "1"
 flate2 = "1"
 lazy_static = "1"
 anchor_types = { path = "../anchor_types" }
+
+[features]
+shutdown-filtering = []
