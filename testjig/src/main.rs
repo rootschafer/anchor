@@ -4,7 +4,7 @@ use std::{
 	os::unix::{io::RawFd, net::UnixStream},
 	path::PathBuf,
 	process::{self, Command},
-	sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex},
+	sync::{Arc, Mutex},
 	time::Duration,
 };
 
@@ -12,23 +12,32 @@ use anchor::*;
 use lazy_static::lazy_static;
 use tempfile::TempDir;
 
-// Atomic flag for commands to signal that shutdown should be cleared
-static CLEAR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
-
-// Context type that implements CheckShutdown for efficient shutdown state checking
-struct ShutdownContext<'a> {
-	is_shutdown: &'a bool,
+#[derive(PartialEq)]
+enum ShutdownState {
+	NotShutdown,
+	Shutdown,
+	ClearingShutdown,
 }
 
-impl<'a> CheckShutdown for ShutdownContext<'a> {
+struct State {
+	shutdown_state: ShutdownState,
+}
+
+impl CheckShutdown for State {
 	fn is_shutdown(&self) -> bool {
-		*self.is_shutdown
+		self.shutdown_state == ShutdownState::Shutdown
+	}
+}
+
+impl CheckShutdown for &mut State {
+	fn is_shutdown(&self) -> bool {
+		self.shutdown_state == ShutdownState::Shutdown
 	}
 }
 
 klipper_config_generate!(
 	transport = crate::TRANSPORT_OUTPUT: crate::BufferTransportOutput,
-	context = crate::ShutdownContext<'ctx>
+	context = &'ctx mut crate::State
 );
 
 struct KlipperInstance {
@@ -53,13 +62,12 @@ impl KlipperInstance {
 				.expect("Could not write config file");
 		}
 
-		// Start Klippy with Unix socket API enabled
 		let child = Command::new("python3")
 			.current_dir(&klipper_path)
 			.arg("klippy/klippy.py")
 			.arg(&cfg_filename)
-			.arg("-a") // Enable API server
-			.arg(socket_path.to_str().unwrap()) // Socket path
+			.arg("-a")
+			.arg(socket_path.to_str().unwrap())
 			.spawn()
 			.expect("Could not launch klippy");
 
@@ -95,30 +103,25 @@ impl KlipperInstance {
 
 		let request_str = serde_json::to_string(&request)?;
 		stream.write_all(request_str.as_bytes())?;
-		stream.write_all(&[0x03])?; // Klippy API requires 0x03 terminator
+		stream.write_all(&[0x03])?;
 		stream.flush()?;
 
 		let mut response_bytes = Vec::new();
 		let mut buf = [0u8; 1024];
 		loop {
 			match stream.read(&mut buf) {
-				Ok(0) => break, // EOF
+				Ok(0) => break,
 				Ok(n) => {
 					response_bytes.extend_from_slice(&buf[..n]);
-					// Check if we've received the terminator
 					if response_bytes.ends_with(&[0x03]) {
 						break;
 					}
 				}
-				Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-					// Timeout - try to parse what we have
-					break;
-				}
+				Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
 				Err(e) => return Err(e.into()),
 			}
 		}
 
-		// Remove terminator if present
 		if response_bytes.ends_with(&[0x03]) {
 			response_bytes.pop();
 		}
@@ -144,7 +147,6 @@ impl KlipperInstance {
 
 	fn firmware_restart(&self) -> Result<(), Box<dyn std::error::Error>> {
 		eprintln!("Sending firmware_restart command to Klippy...");
-		// firmware_restart is a gcode command, not a direct API method
 		self.send_command(
 			"gcode/script",
 			Some(serde_json::json!({
@@ -246,49 +248,34 @@ fn main() {
 		serial.ttyname().display()
 	));
 
-	// Wait for Klippy to initialize and connect to MCU
-	// We'll run the test sequence in a separate thread after Klippy is ready
 	let instance_arc = Arc::new(instance);
 	let instance_clone = Arc::clone(&instance_arc);
 	std::thread::spawn(move || {
-		// Wait for socket to be available and Klippy to be ready
 		eprintln!("Waiting for Klippy to initialize...");
-		std::thread::sleep(Duration::from_secs(3));
+		std::thread::sleep(Duration::from_secs(5));
 
-		// Wait a bit more for MCU connection to be established
-		std::thread::sleep(Duration::from_secs(2));
-
-		// Test sequence: emergency_stop -> firmware_restart -> validate recovery
 		eprintln!("Starting test sequence...");
-
-		// Step 1: Send emergency_stop command
 		if let Err(e) = instance_clone.emergency_stop() {
 			eprintln!("Failed to send emergency_stop: {}", e);
 		} else {
 			eprintln!("Emergency stop command sent, waiting for MCU to enter shutdown state...");
-			std::thread::sleep(Duration::from_secs(1));
-
-			// Step 2: Send firmware_restart command
-			std::thread::sleep(Duration::from_secs(1));
+			std::thread::sleep(Duration::from_secs(2));
 			if let Err(e) = instance_clone.firmware_restart() {
 				eprintln!("Failed to send firmware_restart: {}", e);
 			} else {
 				eprintln!("Firmware restart command sent, waiting for MCU to recover...");
-				std::thread::sleep(Duration::from_secs(2));
+				std::thread::sleep(Duration::from_secs(4));
 			}
 		}
 	});
 
 	let mut recv = [0u8; 128];
 	let mut rcvbuf: Vec<u8> = Vec::new();
-	let mut is_shutdown = false; // Local variable for zero-cost reads in happy path
+	let mut state = State { shutdown_state: ShutdownState::NotShutdown };
 	
 	loop {
-		// Check atomic only when in shutdown state (optimized happy path)
-		if is_shutdown && CLEAR_SHUTDOWN.load(Ordering::Relaxed) {
-			is_shutdown = false;
-			CLEAR_SHUTDOWN.store(false, Ordering::Relaxed);
-			eprintln!("✓ MCU recovered from shutdown state");
+		if state.shutdown_state == ShutdownState::ClearingShutdown {
+			state.shutdown_state = ShutdownState::NotShutdown;
 		}
 		
 		match nix::unistd::read(serial.master(), &mut recv) {
@@ -297,20 +284,14 @@ fn main() {
 			Ok(n) => {
 				rcvbuf.extend(&recv[..n]);
 
-				// Pass context with reference to local shutdown state
-				let context = ShutdownContext { is_shutdown: &is_shutdown };
-				if let Err(e) = KLIPPER_TRANSPORT.receive(&mut rcvbuf, context) {
+				if let Err(e) = KLIPPER_TRANSPORT.receive(&mut rcvbuf, &mut state) {
 					match e {
 						crate::_anchor_config::KlipperCommandError::EmergencyStop(_) => {
 							eprintln!("Emergency stop triggered! Entering shutdown state.");
-							is_shutdown = true; // Set local shutdown state
-							eprintln!("✓ MCU is in shutdown state");
-							// Continue loop to process clear_shutdown/reset commands
+							state.shutdown_state = ShutdownState::Shutdown;
 						}
 						crate::_anchor_config::KlipperCommandError::GetConfig(_) => {
-							// ConfigError::NotFound is expected when config hasn't been set yet
 							eprintln!("Config error (expected if config not set): {:?}", e);
-							// Continue loop - don't break
 						}
 						_ => {
 							eprintln!("Command error: {:?}", e);
@@ -322,7 +303,6 @@ fn main() {
 		};
 		if cur_clock() > 10 * CLOCK_FREQ {
 			klipper_output!("This the %uth test! %*s?", Pins::PB8.into(), "You alright?");
-			// klipper_shutdown!("This is a test!", cur_clock());
 		}
 	}
 }
@@ -337,7 +317,7 @@ fn cur_clock() -> u32 {
 }
 
 #[klipper_command(flags = anchor::KlipperCommandFlags::HF_IN_SHUTDOWN)]
-fn get_uptime(_context: &mut ShutdownContext) {
+fn get_uptime(_context: &mut State) {
 	klipper_reply!(uptime, high: u32 = 2, clock: u32 = cur_clock());
 }
 
@@ -353,7 +333,6 @@ pub enum EmergencyStopError {
 
 #[klipper_command(flags = anchor::KlipperCommandFlags::HF_IN_SHUTDOWN)]
 fn emergency_stop() -> Result<(), EmergencyStopError> {
-	// Shutdown state is set in main loop when this error is returned
 	Err(EmergencyStopError::Triggered)
 }
 
@@ -384,22 +363,15 @@ fn get_config() -> Result<(), ConfigError> {
 }
 
 #[klipper_command(flags = anchor::KlipperCommandFlags::HF_IN_SHUTDOWN)]
-fn config_reset() {
+fn config_reset(context: &mut State) {
 	*CONFIG_CRC.lock().unwrap() = None;
-	// Signal that shutdown should be cleared (checked in main loop)
-	CLEAR_SHUTDOWN.store(true, Ordering::Relaxed);
+	context.shutdown_state = ShutdownState::ClearingShutdown;
 }
 
 #[klipper_command(flags = anchor::KlipperCommandFlags::HF_IN_SHUTDOWN)]
-fn clear_shutdown() {
-	// Signal that shutdown should be cleared (checked in main loop)
-	CLEAR_SHUTDOWN.store(true, Ordering::Relaxed);
+fn clear_shutdown(context: &mut State) {
+	context.shutdown_state = ShutdownState::ClearingShutdown;
 }
-
-// #[klipper_command]
-// fn reset() {
-//     *SHUTDOWN_STATE.lock().unwrap() = false;
-// }
 
 #[klipper_command]
 fn finalize_config(crc: u32) {
@@ -466,19 +438,16 @@ klipper_enumeration! {
 }
 
 mod test_embed {
-	use anchor::*;
-	#[klipper_command]
-	pub fn woot() {}
+    use anchor::*;
+    #[klipper_command]
+    pub fn woot() {}
 }
 
 mod test;
 
 #[cfg(feature = "skipped_command")]
 mod test_skipped {
-	use anchor::*;
-	#[klipper_command]
-	pub fn skipped_command_in_module() {}
+    use anchor::*;
+    #[klipper_command]
+    pub fn skipped_command_in_module() {}
 }
-
-#[klipper_command]
-fn wee() {}
