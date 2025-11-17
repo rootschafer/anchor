@@ -36,6 +36,9 @@ This repo contains the following folders:
     Implements the `proc_macro`s needed by `anchor`. You shouldn't have to mess
     with this.
 
+  * `anchor_types`  
+    Used internally to provide the `KlipperCommandFlags` struct which `anchor` re-exports.
+
 Anchor powers the [Beacon3D Surface Scanner](https://beacon3d.com/).
 
 ## Features
